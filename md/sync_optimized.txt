@@ -1,0 +1,519 @@
+# ECS → COS 迁移方案（优化版）
+
+## 方案概述
+
+- **目标**：将 1PB 数据从 ECS 迁移到 COS
+- **策略**：3 台机器并行，按数字前缀分区
+- **原则**：准确优先，存在即跳过，简单可重跑
+
+---
+
+## 架构设计
+
+| 机器 | 数字范围 | 预估文件数 | 日志位置 |
+|------|----------|------------|----------|
+| 机器1 | 0-3 开头 | ~33% | /var/log/juicefs |
+| 机器2 | 4-6 开头 | ~33% | /var/log/juicefs |
+| 机器3 | 7-9 开头 | ~34% | /var/log/juicefs |
+
+**硬件要求**：
+- 内存：300GB+（每台）
+- 存储：NAS 挂载 /var，剩余空间 > 500GB
+- 网络：内网访问 ECS 和 COS
+
+---
+
+## 准备工作
+
+在三台机器上分别执行：
+
+```bash
+# 创建必要目录
+mkdir -p /opt/migration /var/log/juicefs
+
+# 添加执行权限
+chmod 755 /opt/migration /var/log/juicefs
+```
+
+---
+
+## 机器1 脚本 (0-3开头)
+
+创建 `/opt/migration/machine1_0-3.sh`：
+
+```bash
+#!/bin/bash
+# machine1_0-3.sh - 机器1：数字 0-3 开头
+
+LOG_DIR="/var/log/juicefs"
+FAILED_LIST="$LOG_DIR/failed_0-3.list"
+
+mkdir -p $LOG_DIR
+> $FAILED_LIST
+
+echo "===== 机器1开始迁移 0-3 开头文件 $(date) =====" | tee -a $LOG_DIR/migration.log
+
+# 后台实时监控并提取错误
+(
+    tail -F $LOG_DIR/juicefs_0-3.log 2>/dev/null | while read line; do
+        if echo "$line" | grep -qiE "error|fail|timeout"; then
+            echo "$line" | grep -oE 's3://[a-zA-Z0-9._/-]+' >> "$FAILED_LIST"
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] $line" >> "$FAILED_LIST.full"
+        fi
+    done
+) &
+TAIL_PID=$!
+
+# 记录开始时间
+START_TIME=$(date +%s)
+
+juicefs sync \
+  --ignore-existing \
+  --threads 200 \
+  --list-threads 50 \
+  --start "0" --end "4" \
+  --max-failure 10 \
+  --check-change \
+  s3://ecs-source/ \
+  cos://cos-dest/ \
+  2>&1 | tee "$LOG_DIR/juicefs_0-3.log"
+
+EXIT_CODE=${PIPESTATUS[0]}
+kill $TAIL_PID 2>/dev/null
+
+# 统计结果
+END_TIME=$(date +%s)
+DURATION=$((END_TIME - START_TIME))
+
+# 提取统计信息
+COPIED=$(grep -c "Copied" "$LOG_DIR/juicefs_0-3.log" 2>/dev/null || echo 0)
+SKIPPED=$(grep -c -i "exist" "$LOG_DIR/juicefs_0-3.log" 2>/dev/null || echo 0)
+ERRORS=$(grep -icE "error|fail" "$LOG_DIR/juicefs_0-3.log" 2>/dev/null || echo 0)
+
+# 去重失败列表
+if [ -f "$FAILED_LIST" ]; then
+    sort -u "$FAILED_LIST" -o "$FAILED_LIST"
+    failed_count=$(wc -l < "$FAILED_LIST")
+    [ "$failed_count" -gt 0 ] && echo "⚠️ 发现 $failed_count 个失败文件" | tee -a $LOG_DIR/migration.log
+fi
+
+echo "===== 机器1结束 0-3 开头文件 $(date) =====" | tee -a $LOG_DIR/migration.log
+echo "耗时: ${DURATION}秒 | 已复制: $COPIED | 已跳过: $SKIPPED | 错误: $ERRORS" | tee -a $LOG_DIR/migration.log
+echo "退出码: $EXIT_CODE" | tee -a $LOG_DIR/migration.log
+exit $EXIT_CODE
+```
+
+---
+
+## 机器2 脚本 (4-6开头)
+
+创建 `/opt/migration/machine2_4-6.sh`：
+
+```bash
+#!/bin/bash
+# machine2_4-6.sh - 机器2：数字 4-6 开头
+
+LOG_DIR="/var/log/juicefs"
+FAILED_LIST="$LOG_DIR/failed_4-6.list"
+
+mkdir -p $LOG_DIR
+> $FAILED_LIST
+
+echo "===== 机器2开始迁移 4-6 开头文件 $(date) =====" | tee -a $LOG_DIR/migration.log
+
+(
+    tail -F $LOG_DIR/juicefs_4-6.log 2>/dev/null | while read line; do
+        if echo "$line" | grep -qiE "error|fail|timeout"; then
+            echo "$line" | grep -oE 's3://[a-zA-Z0-9._/-]+' >> "$FAILED_LIST"
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] $line" >> "$FAILED_LIST.full"
+        fi
+    done
+) &
+TAIL_PID=$!
+
+START_TIME=$(date +%s)
+
+juicefs sync \
+  --ignore-existing \
+  --threads 200 \
+  --list-threads 50 \
+  --start "4" --end "7" \
+  --max-failure 10 \
+  --check-change \
+  s3://ecs-source/ \
+  cos://cos-dest/ \
+  2>&1 | tee "$LOG_DIR/juicefs_4-6.log"
+
+EXIT_CODE=${PIPESTATUS[0]}
+kill $TAIL_PID 2>/dev/null
+
+END_TIME=$(date +%s)
+DURATION=$((END_TIME - START_TIME))
+
+COPIED=$(grep -c "Copied" "$LOG_DIR/juicefs_4-6.log" 2>/dev/null || echo 0)
+SKIPPED=$(grep -c -i "exist" "$LOG_DIR/juicefs_4-6.log" 2>/dev/null || echo 0)
+ERRORS=$(grep -icE "error|fail" "$LOG_DIR/juicefs_4-6.log" 2>/dev/null || echo 0)
+
+if [ -f "$FAILED_LIST" ]; then
+    sort -u "$FAILED_LIST" -o "$FAILED_LIST"
+    failed_count=$(wc -l < "$FAILED_LIST")
+    [ "$failed_count" -gt 0 ] && echo "⚠️ 发现 $failed_count 个失败文件" | tee -a $LOG_DIR/migration.log
+fi
+
+echo "===== 机器2结束 4-6 开头文件 $(date) =====" | tee -a $LOG_DIR/migration.log
+echo "耗时: ${DURATION}秒 | 已复制: $COPIED | 已跳过: $SKIPPED | 错误: $ERRORS" | tee -a $LOG_DIR/migration.log
+echo "退出码: $EXIT_CODE" | tee -a $LOG_DIR/migration.log
+exit $EXIT_CODE
+```
+
+---
+
+## 机器3 脚本 (7-9开头)
+
+创建 `/opt/migration/machine3_7-9.sh`：
+
+```bash
+#!/bin/bash
+# machine3_7-9.sh - 机器3：数字 7-9 开头
+
+LOG_DIR="/var/log/juicefs"
+FAILED_LIST="$LOG_DIR/failed_7-9.list"
+
+mkdir -p $LOG_DIR
+> $FAILED_LIST
+
+echo "===== 机器3开始迁移 7-9 开头文件 $(date) =====" | tee -a $LOG_DIR/migration.log
+
+(
+    tail -F $LOG_DIR/juicefs_7-9.log 2>/dev/null | while read line; do
+        if echo "$line" | grep -qiE "error|fail|timeout"; then
+            echo "$line" | grep -oE 's3://[a-zA-Z0-9._/-]+' >> "$FAILED_LIST"
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] $line" >> "$FAILED_LIST.full"
+        fi
+    done
+) &
+TAIL_PID=$!
+
+START_TIME=$(date +%s)
+
+juicefs sync \
+  --ignore-existing \
+  --threads 200 \
+  --list-threads 50 \
+  --start "7" --end ":" \
+  --max-failure 10 \
+  --check-change \
+  s3://ecs-source/ \
+  cos://cos-dest/ \
+  2>&1 | tee "$LOG_DIR/juicefs_7-9.log"
+
+EXIT_CODE=${PIPESTATUS[0]}
+kill $TAIL_PID 2>/dev/null
+
+END_TIME=$(date +%s)
+DURATION=$((END_TIME - START_TIME))
+
+COPIED=$(grep -c "Copied" "$LOG_DIR/juicefs_7-9.log" 2>/dev/null || echo 0)
+SKIPPED=$(grep -c -i "exist" "$LOG_DIR/juicefs_7-9.log" 2>/dev/null || echo 0)
+ERRORS=$(grep -icE "error|fail" "$LOG_DIR/juicefs_7-9.log" 2>/dev/null || echo 0)
+
+if [ -f "$FAILED_LIST" ]; then
+    sort -u "$FAILED_LIST" -o "$FAILED_LIST"
+    failed_count=$(wc -l < "$FAILED_LIST")
+    [ "$failed_count" -gt 0 ] && echo "⚠️ 发现 $failed_count 个失败文件" | tee -a $LOG_DIR/migration.log
+fi
+
+echo "===== 机器3结束 7-9 开头文件 $(date) =====" | tee -a $LOG_DIR/migration.log
+echo "耗时: ${DURATION}秒 | 已复制: $COPIED | 已跳过: $SKIPPED | 错误: $ERRORS" | tee -a $LOG_DIR/migration.log
+echo "退出码: $EXIT_CODE" | tee -a $LOG_DIR/migration.log
+exit $EXIT_CODE
+```
+
+---
+
+## 实时监控脚本
+
+创建 `/opt/migration/monitor.sh`（三台机器通用）：
+
+```bash
+#!/bin/bash
+# monitor.sh - 实时监控迁移进度
+
+LOG_DIR="/var/log/juicefs"
+
+while true; do
+    clear
+    echo "==== 迁移监控 - $(date) ===="
+    echo ""
+
+    for log in $LOG_DIR/juicefs_*.log; do
+        [ -f "$log" ] || continue
+
+        range=$(basename $log | grep -oE '[0-9]+-[0-9]+' || echo "未知")
+        echo "--- 范围: $range ---"
+
+        copied=$(grep -c "Copied" $log 2>/dev/null || echo 0)
+        skipped=$(grep -c -i "exist" $log 2>/dev/null || echo 0)
+        errors=$(grep -icE "error|fail" $log 2>/dev/null || echo 0)
+
+        echo "已复制: $copied | 已跳过: $skipped | 错误: $errors"
+
+        # 显示最近处理的文件
+        last_file=$(tail -3 $log 2>/dev/null | grep -oE 's3://[^[:space:]]+' | tail -1)
+        [ -n "$last_file" ] && echo "最近处理: $(basename $last_file)"
+
+        # 显示最近错误
+        if [ "$errors" -gt 0 ]; then
+            echo "最近错误:"
+            grep -iE "error|fail" $log 2>/dev/null | tail -2 | sed 's/^/  /'
+        fi
+
+        echo ""
+    done
+
+    # 系统资源
+    echo "--- 系统状态 ---"
+    echo "内存使用: $(free -h | awk '/Mem/{print $3"/"$2}')"
+    echo "CPU负载: $(uptime | awk -F'load average:' '{print $2}')"
+    echo "NAS空间: $(df -h /var | tail -1 | awk '{print $3"/"$2 " (" $5 ")"}')"
+
+    # 待重试失败文件统计
+    for failed in $LOG_DIR/failed_*.list; do
+        [ -f "$failed" ] || continue
+        count=$(wc -l < "$failed" 2>/dev/null || echo 0)
+        [ "$count" -gt 0 ] && echo "待重试: $(basename $failed) 有 $count 个"
+    done
+
+    echo ""
+    echo "按 Ctrl+C 退出"
+    sleep 30
+done
+```
+
+---
+
+## 失败重试脚本
+
+创建 `/opt/migration/retry_failed.sh`：
+
+```bash
+#!/bin/bash
+# retry_failed.sh - 重试失败的文件
+
+FAILED_LIST=${1:-""}
+LOG_DIR="/var/log/juicefs"
+
+if [ -z "$FAILED_LIST" ] || [ ! -f "$FAILED_LIST" ]; then
+    echo "用法: $0 <失败列表文件>"
+    echo "示例: $0 /var/log/juicefs/failed_0-3.list"
+    exit 1
+fi
+
+retry_count=$(wc -l < "$FAILED_LIST")
+echo "开始重试 $retry_count 个失败文件..."
+
+RETRY_LOG="$LOG_DIR/retry_$(date +%Y%m%d_%H%M%S).log"
+STILL_FAILED="$LOG_DIR/still_failed_$(date +%Y%m%d_%H%M%S).list"
+> "$STILL_FAILED"
+
+success=0
+failed=0
+
+while IFS= read -r object; do
+    [ -z "$object" ] && continue
+
+    echo "重试: $object"
+
+    # 提取文件名用于 include
+    filename=$(basename "$object")
+
+    # 使用更轻量的方式重试
+    if juicefs sync \
+        --ignore-existing \
+        --threads 10 \
+        --include "$filename" \
+        --max-failure 1 \
+        s3://ecs-source/ \
+        cos://cos-dest/ 2>&1 | grep -q "Copied"; then
+
+        echo "  ✓ 成功"
+        ((success++))
+    else
+        echo "  ✗ 仍然失败"
+        echo "$object" >> "$STILL_FAILED"
+        ((failed++))
+    fi
+
+    sleep 1
+done < "$FAILED_LIST"
+
+echo ""
+echo "===== 重试完成 ====="
+echo "成功: $success"
+echo "仍然失败: $failed"
+[ "$failed" -gt 0 ] && echo "列表: $STILL_FAILED"
+```
+
+---
+
+## 准确性验证脚本
+
+创建 `/opt/migration/verify.sh`：
+
+```bash
+#!/bin/bash
+# verify.sh - 验证迁移准确性
+
+echo "===== 准确性验证 $(date) ====="
+
+# 1. 按前缀统计源端和目标端
+echo ""
+echo "--- 文件数量对比 ---"
+printf "%-10s %-15s %-15s %-10s\n" "前缀" "ECS源端" "COS目标端" "差异"
+
+for prefix in 0 1 2 3 4 5 6 7 8 9; do
+    source_count=$(juicefs sync --dry-run --list-only --include "$prefix*" s3://ecs-source/ /tmp/ 2>/dev/null | wc -l)
+    dest_count=$(juicefs sync --dry-run --list-only --include "$prefix*" cos://cos-dest/ /tmp/ 2>/dev/null | wc -l)
+    diff=$((source_count - dest_count))
+
+    if [ "$diff" -eq 0 ]; then
+        status="✓"
+    else
+        status="✗"
+    fi
+
+    printf "%-10s %-15s %-15s %-10s\n" "$prefix" "$source_count" "$dest_count" "$status"
+done
+
+# 2. 抽样验证
+echo ""
+echo "--- 抽样验证（每个前缀抽10个）---"
+
+for prefix in 0 1 2 3 4 5 6 7 8 9; do
+    sample=$(juicefs sync --dry-run --list-only --include "$prefix*" s3://ecs-source/ /tmp/ 2>/dev/null | shuf -n 10)
+    found=0
+
+    for file in $sample; do
+        filename=$(basename "$file")
+        if juicefs sync --dry-run --list-only --include "$filename" cos://cos-dest/ /tmp/ 2>/dev/null | grep -q "$filename"; then
+            ((found++))
+        fi
+    done
+
+    echo "前缀 $prefix: 抽样10个，找到 $found 个"
+done
+
+echo ""
+echo "===== 验证完成 ====="
+```
+
+---
+
+## 优化后的关键参数说明
+
+| 参数 | 值 | 说明 |
+|------|-----|------|
+| `--ignore-existing` | ✅ | **核心参数**，目标存在即跳过，不检查 |
+| `--threads` | 200 | 传输线程，充分利用300GB内存 |
+| `--list-threads` | 50 | 列举线程，加快文件遍历 |
+| `--start/--end` | 0-4, 4-7, 7-: | 数字前缀分区 |
+| `--max-failure` | 10 | 连续10次失败即退出，及时发现系统性问题 |
+| `--check-change` | ✅ 新增 | 轻量级校验，基于文件大小和 mtime 比较 |
+
+### 移除的无用参数
+
+| 参数 | 原因 |
+|------|------|
+| `--cache-dir` | mount 参数，sync 不支持 |
+| `--cache-size` | mount 参数，sync 不支持 |
+| `--buffer-size` | sync 不支持此参数 |
+| `--timeout` | sync 不支持此参数 |
+| `--log-level` | 使用 `tee` 重定向输出 |
+| `--log` | 使用 `tee` 重定向输出 |
+
+---
+
+## 执行步骤
+
+### 1. 准备阶段（三台机器分别执行）
+
+```bash
+# 创建目录
+mkdir -p /opt/migration /var/log/juicefs
+
+# 复制脚本到对应机器
+# 机器1: machine1_0-3.sh, monitor.sh, retry_failed.sh, verify.sh
+# 机器2: machine2_4-6.sh, monitor.sh, retry_failed.sh, verify.sh
+# 机器3: machine3_7-9.sh, monitor.sh, retry_failed.sh, verify.sh
+
+# 添加执行权限
+chmod +x /opt/migration/*.sh
+```
+
+### 2. 启动迁移（三台机器同时执行）
+
+```bash
+# 机器1
+nohup /opt/migration/machine1_0-3.sh > /var/log/juicefs/nohup.out 2>&1 &
+
+# 机器2
+nohup /opt/migration/machine2_4-6.sh > /var/log/juicefs/nohup.out 2>&1 &
+
+# 机器3
+nohup /opt/migration/machine3_7-9.sh > /var/log/juicefs/nohup.out 2>&1 &
+```
+
+### 3. 监控进度
+
+```bash
+# 在任意机器上查看实时进度
+/opt/migration/monitor.sh
+```
+
+### 4. 故障恢复流程
+
+如果某台机器报错退出：
+
+```bash
+# 1. 查看错误日志
+tail -50 /var/log/juicefs/juicefs_0-3.log
+
+# 2. 查看失败文件列表
+cat /var/log/juicefs/failed_0-3.list
+
+# 3. 处理问题（修复网络、权限等）
+
+# 4. 直接重新执行脚本（会自动跳过已迁移的文件）
+nohup /opt/migration/machine1_0-3.sh > /var/log/juicefs/nohup.out 2>&1 &
+
+# 5. 如果有个别文件一直失败，针对性重试
+/opt/migration/retry_failed.sh /var/log/juicefs/failed_0-3.list
+```
+
+### 5. 迁移完成后验证
+
+```bash
+# 在三台机器上分别执行验证
+/opt/migration/verify.sh
+```
+
+---
+
+## 预期时间线
+
+| 阶段 | 预估时间 | 说明 |
+|------|----------|------|
+| 全量迁移 | 5-8天 | 三台并行，200线程，无带宽限制 |
+| 失败重试 | 1天 | 处理失败文件 |
+| 准确性验证 | 1天 | 统计对比 |
+| **总计** | **约1周** | 高并发模式 |
+
+---
+
+## 注意事项
+
+1. **不要添加 `--update` 或 `--check-all`/`--check-new`**：与 `--ignore-existing` 逻辑有冲突
+2. **简单重跑即可恢复**：`--ignore-existing` 保证幂等性，重复执行安全
+3. **日志定期清理**：迁移完成后清理 /var/log/juicefs 释放空间
+4. **COS权限确认**：确保有写入权限，避免跑到一半报权限错误
+5. **网络带宽**：200线程无限速，确保不会打满内网影响其他业务

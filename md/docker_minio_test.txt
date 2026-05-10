@@ -1,0 +1,260 @@
+# Docker 本地 MinIO 迁移测试
+
+## 方案概述
+
+使用 Docker Compose 启动两个 MinIO 服务，执行迁移测试。
+
+---
+
+## 1. 创建 docker-compose.yml
+
+```yaml
+version: '3.8'
+
+services:
+  minio-src:
+    image: minio/minio
+    container_name: minio-src
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio-src-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  minio-dst:
+    image: minio/minio
+    container_name: minio-dst
+    ports:
+      - "9002:9000"
+      - "9003:9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio-dst-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  minio-src-data:
+  minio-dst-data:
+```
+
+---
+
+## 2. 启动服务
+
+```bash
+# 启动两个 MinIO
+docker-compose up -d
+
+# 等待服务就绪
+sleep 10
+
+# 查看状态
+docker-compose ps
+```
+
+---
+
+## 3. 配置 mc
+
+```bash
+# 配置 mc
+mc alias set src http://127.0.0.1:9000 minioadmin minioadmin
+mc alias set dst http://127.0.0.1:9002 minioadmin minioadmin
+
+# 创建 bucket
+mc mb src/testbucket --quiet
+mc mb dst/testbucket --quiet
+```
+
+---
+
+## 4. 生成测试数据
+
+```bash
+#!/bin/bash
+# generate_data.sh
+
+echo ">>> 生成 10000 个测试对象..."
+
+for i in $(seq 1 10000); do
+    # 格式：1_xxx, 2_xxx, ..., 10000
+    content="test content $i"
+    echo "$content" | mc pipe src/testbucket/${i}.txt
+done
+
+echo ">>> 完成"
+mc ls src/testbucket | wc -l
+```
+
+---
+
+## 5. 执行迁移测试
+
+```bash
+juicefs sync \
+    --ignore-existing \
+    --check-new \
+    --threads 20 \
+    --verbose \
+    --metrics 127.0.0.1:9567 \
+    "s3://minioadmin:minioadmin@127.0.0.1:9000/testbucket/" \
+    "s3://minioadmin:minioadmin@127.0.0.1:9002/testbucket/"
+```
+
+---
+
+## 6. 验证结果
+
+```bash
+# 对比数量
+echo "源端对象数:"
+mc ls src/testbucket | wc -l
+
+echo "目标端对象数:"
+mc ls dst/testbucket | wc -l
+
+# 抽样验证
+echo "抽样验证 file_1234.txt:"
+mc ls dst/testbucket/1234.txt
+```
+
+---
+
+## 一键测试脚本
+
+创建 `test_migration.sh`：
+
+```bash
+#!/bin/bash
+# test_migration.sh - Docker MinIO 迁移测试
+
+set -e
+
+echo "=========================================="
+echo "  Docker MinIO 迁移测试"
+echo "=========================================="
+
+# 1. 启动 MinIO
+echo ">>> 启动 MinIO 服务..."
+docker-compose up -d
+sleep 10
+
+# 2. 配置 mc
+echo ">>> 配置 mc..."
+mc alias set src http://127.0.0.1:9000 minioadmin minioadmin 2>/dev/null || true
+mc alias set dst http://127.0.0.1:9002 minioadmin minioadmin 2>/dev/null || true
+mc mb src/testbucket --quiet 2>/dev/null || true
+mc mb dst/testbucket --quiet 2>/dev/null || true
+
+# 3. 生成测试数据
+echo ">>> 生成 10000 个测试对象..."
+for i in $(seq 1 10000); do
+    echo "content $i" | mc pipe src/testbucket/${i}.txt
+done
+
+SRC_COUNT=$(mc ls src/testbucket | wc -l)
+echo "源端对象数: $SRC_COUNT"
+
+# 4. 执行迁移
+echo ""
+echo ">>> 开始迁移..."
+START_TIME=$(date +%s)
+
+juicefs sync \
+    --ignore-existing \
+    --check-new \
+    --threads 20 \
+    --verbose \
+    "s3://minioadmin:minioadmin@127.0.0.1:9000/testbucket/" \
+    "s3://minioadmin:minioadmin@127.0.0.1:9002/testbucket/"
+
+DURATION=$(($(date +%s) - START_TIME))
+echo ""
+echo ">>> 迁移完成，耗时: ${DURATION}秒"
+
+# 5. 验证
+echo ""
+echo ">>> 验证结果..."
+DST_COUNT=$(mc ls dst/testbucket | wc -l)
+echo "源端对象数: $SRC_COUNT"
+echo "目标对象数: $DST_COUNT"
+
+if [ "$SRC_COUNT" -eq "$DST_COUNT" ]; then
+    echo "✓ 对象数量一致"
+else
+    echo "✗ 对象数量不一致"
+fi
+
+# 6. 清理
+echo ""
+echo ">>> 清理..."
+docker-compose down
+
+echo ""
+echo "=========================================="
+echo "  测试完成"
+echo "=========================================="
+```
+
+---
+
+## 执行步骤
+
+```bash
+# 1. 启动服务
+docker-compose up -d
+
+# 2. 运行测试脚本
+chmod +x test_migration.sh
+./test_migration.sh
+
+# 或者手动分步执行
+docker-compose logs -f  # 查看日志
+```
+
+---
+
+## 验证命令速查
+
+```bash
+# 查看源端文件
+mc ls src/testbucket | head -10
+
+# 查看目标端文件
+mc ls dst/testbucket | head -10
+
+# 统计数量
+mc ls src/testbucket | wc -l
+mc ls dst/testbucket | wc -l
+
+# 停止服务
+docker-compose down
+
+# 查看容器日志
+docker-compose logs minio-src
+docker-compose logs minio-dst
+```
+
+---
+
+## 注意事项
+
+1. **JuiceFS 客户端**：需要在宿主机上安装 juicefs
+2. **URL 编码**：密钥中的特殊字符需要编码（`/` → `%2F`）
+3. **权限**：确保 9000 和 9002 端口未被占用

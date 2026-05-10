@@ -1,0 +1,202 @@
+# 10000 对象小迁移测试脚本（带Metrics监控）
+
+## 方案概述
+
+- **目标**：测试迁移 10000 个对象，验证脚本可行性
+- **范围**：前 10000 个对象（按 key 排序）
+- **原则**：小规模验证，确认无误后再大规模迁移
+
+---
+
+## 测试脚本
+
+创建 `/opt/migration/test_migration.sh`：
+
+```bash
+#!/bin/bash
+# test_migration.sh - 10000对象小规模迁移测试（带Metrics监控）
+
+# ============ 配置区域 ============
+# 源端和目标端 URL（根据实际情况修改）
+SRC_URL="s3://ecs-source/"
+DST_URL="cos://cos-dest/"
+
+# 测试对象数量
+TEST_LIMIT=10000
+
+# 日志目录
+LOG_DIR="/var/log/juicefs_test"
+
+# Metrics 端口
+METRICS_PORT=9567
+# =================================
+
+mkdir -p $LOG_DIR
+
+echo "=========================================="
+echo "  10000 对象小迁移测试"
+echo "=========================================="
+echo "源: $SRC_URL"
+echo "目标: $DST_URL"
+echo "数量: $TEST_LIMIT"
+echo "Metrics: http://127.0.0.1:$METRICS_PORT/metrics"
+echo "时间: $(date)"
+echo "=========================================="
+
+# 开始时间
+START_TIME=$(date +%s)
+
+# 启动后台监控进程
+(
+    while true; do
+        # 抓取 metrics
+        METRICS=$(curl -s http://127.0.0.1:$METRICS_PORT/metrics 2>/dev/null)
+        if [ -n "$METRICS" ]; then
+            COPIED=$(echo "$METRICS" | grep "juicefs_sync_copied" | awk '{print $2}' | head -1)
+            SKIPPED=$(echo "$METRICS" | grep "juicefs_sync_skipped" | awk '{print $2}' | head -1)
+            FAILED=$(echo "$METRICS" | grep "juicefs_sync_failed" | awk '{print $2}' | head -1)
+            echo "[$(date '+%H:%M:%S')] 已复制: ${COPIED:-0} | 已跳过: ${SKIPPED:-0} | 失败: ${FAILED:-0}"
+        fi
+        sleep 10
+    done
+) > "$LOG_DIR/metrics.log" 2>&1 &
+METRICS_PID=$!
+
+# 捕获退出信号，停止监控进程
+trap "kill $METRICS_PID 2>/dev/null" EXIT
+
+# 执行迁移
+echo ""
+echo ">>> 开始迁移测试..."
+
+juicefs sync \
+    --ignore-existing \
+    --threads 50 \
+    --list-threads 10 \
+    --limit $TEST_LIMIT \
+    --max-failure 100 \
+    --verbose \
+    --metrics "127.0.0.1:$METRICS_PORT" \
+    "$SRC_URL" \
+    "$DST_URL" \
+    2>&1 | tee "$LOG_DIR/test_migration.log"
+
+EXIT_CODE=${PIPESTATUS[0]}
+
+# 停止监控
+kill $METRICS_PID 2>/dev/null
+
+# 结束时间
+END_TIME=$(date +%s)
+DURATION=$((END_TIME - START_TIME))
+
+echo ""
+echo "=========================================="
+echo "  迁移完成"
+echo "=========================================="
+
+# 统计结果
+COPIED=$(grep -c "Copied data of" "$LOG_DIR/test_migration.log" 2>/dev/null || echo 0)
+SKIPPED=$(grep -c -i "exist" "$LOG_DIR/test_migration.log" 2>/dev/null || echo 0)
+ERRORS=$(grep -icE "error|fail" "$LOG_DIR/test_migration.log" 2>/dev/null || echo 0)
+
+echo "退出码: $EXIT_CODE"
+echo "耗时: ${DURATION}秒"
+echo "已复制: $COPIED"
+echo "已跳过: $SKIPPED"
+echo "错误数: $ERRORS"
+
+# 计算速度
+if [ $DURATION -gt 0 ] && [ $COPIED -gt 0 ]; then
+    SPEED=$((COPIED / DURATION))
+    echo "速度: 约 $SPEED 对象/秒"
+fi
+
+echo ""
+echo "日志文件:"
+echo "  - 迁移日志: $LOG_DIR/test_migration.log"
+echo "  - Metrics日志: $LOG_DIR/metrics.log"
+
+echo ""
+echo "=========================================="
+echo "  验证结果"
+echo "=========================================="
+
+if [ $EXIT_CODE -eq 0 ]; then
+    echo "✓ 迁移命令执行成功"
+else
+    echo "✗ 迁移命令执行失败，退出码: $EXIT_CODE"
+fi
+
+if [ $ERRORS -eq 0 ]; then
+    echo "✓ 无错误"
+else
+    echo "✗ 存在 $ERRORS 个错误，请查看日志"
+    grep -iE "error|fail" "$LOG_DIR/test_migration.log" | tail -5
+fi
+
+if [ $COPIED -gt 0 ]; then
+    echo "✓ 成功复制 $COPIED 个对象"
+else
+    echo "⚠ 没有复制任何对象，可能是目标已存在或范围问题"
+fi
+
+echo ""
+echo "测试完成！确认无误后可执行大规模迁移"
+echo "=========================================="
+```
+
+---
+
+## 手动查看 Metrics（实时）
+
+ 方法```bash
+#1：直接查看 metrics 日志
+tail -f /var/log/juicefs_test/metrics.log
+
+# 方法2：手动抓取
+curl -s http://127.0.0.1:9567/metrics | grep -E "juicefs_sync_copied|juicefs_sync_skipped|juicefs_sync_failed|juicefs_sync_pending"
+
+# 方法3：定时打印
+while true; do
+    curl -s http://127.0.0.1:9567/metrics | grep "juicefs_sync_copied" | awk '{print "已复制: " $2}'
+    sleep 10
+done
+```
+
+---
+
+## Metrics 关键指标
+
+| 指标 | 说明 |
+|------|------|
+| `juicefs_sync_copied` | 已复制的对象数 |
+| `juicefs_sync_skipped` | 跳过的对象数 |
+| `juicefs_sync_failed` | 失败的对象数 |
+| `juicefs_sync_pending` | 待处理的对象数 |
+| `juicefs_sync_copied_bytes` | 已复制的数据量 |
+| `juicefs_sync_skipped_bytes` | 跳过的数据量 |
+
+---
+
+## 测试步骤
+
+```bash
+# 1. 创建目录
+mkdir -p /opt/migration /var/log/juicefs_test
+
+# 2. 修改脚本中的 URL
+# SRC_URL="s3://ecs-source/"
+# DST_URL="cos://cos-dest/"
+
+# 3. 执行测试
+/opt/migration/test_migration.sh
+```
+
+---
+
+## 注意事项
+
+1. **Metrics 只在迁移运行时有效**：迁移结束后端口就不可用了
+2. **每个迁移任务需要不同端口**：如果同时跑多个迁移，需要用不同的 metrics 端口
+3. **Metrics 日志可以实时查看**：比 grep 日志更准确
