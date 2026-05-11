@@ -38,7 +38,6 @@ import (
 )
 
 var logger = utils.GetLogger("juicefs")
-var cliCtx *cli.Context
 var debugAgent string
 var debugAgentOnce sync.Once
 
