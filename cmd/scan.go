@@ -90,6 +90,14 @@ Examples:
 				Name:  "scan-id",
 				Usage: "scan run ID (auto-generated if not set; when used with existing DB + export, re-exports without scanning)",
 			},
+			&cli.StringFlag{
+				Name:  "diff-from",
+				Usage: "first scan_id for diff comparison (requires --diff-to and --export)",
+			},
+			&cli.StringFlag{
+				Name:  "diff-to",
+				Usage: "second scan_id for diff comparison (requires --diff-from and --export)",
+			},
 		},
 	}
 }
@@ -97,6 +105,30 @@ Examples:
 func doScan(c *cli.Context) error {
 	setup(c, 0)
 	args := c.Args()
+
+	// Diff mode: compare two scan_ids
+	diffFrom := c.String("diff-from")
+	diffTo := c.String("diff-to")
+	if diffFrom != "" || diffTo != "" {
+		if diffFrom == "" || diffTo == "" {
+			return fmt.Errorf("both --diff-from and --diff-to are required")
+		}
+		dbType := c.String("db-type")
+		dbDsn := c.String("db-dsn")
+		export := c.String("export")
+		if dbType == "" || dbDsn == "" {
+			return fmt.Errorf("--db-type and --db-dsn are required for diff")
+		}
+		if export == "" {
+			return fmt.Errorf("--export is required for diff")
+		}
+		n, err := scan.DiffScans(dbType, dbDsn, diffFrom, diffTo, export)
+		if err != nil {
+			return err
+		}
+		logger.Infof("Diff complete: %d changes exported to %s", n, export)
+		return nil
+	}
 
 	// Re-export mode: no source, export from existing DB
 	if args.Len() == 0 && c.String("scan-id") != "" {

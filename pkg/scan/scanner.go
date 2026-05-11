@@ -226,6 +226,119 @@ func ExportCSV(dbType, dsn, scanID, startTime, endTime, output string) (int, err
 	return count, nil
 }
 
+// DiffRecord represents a single difference between two inventory scans.
+type DiffRecord struct {
+	Change string // "+" new, "-" deleted, "~" modified
+	Key    string
+	SizeA  int64
+	MtimeA string
+	SizeB  int64
+	MtimeB string
+}
+
+// DiffScans compares two scan_ids and writes the diff to a CSV file.
+func DiffScans(dbType, dsn, scanIDA, scanIDB, output string) (int, error) {
+	m, err := openInventoryDB(dbType, dsn)
+	if err != nil {
+		return 0, err
+	}
+	defer m.close()
+
+	loadScan := func(scanID string) (map[string]*InventoryRecord, error) {
+		result := make(map[string]*InventoryRecord)
+		var query string
+		if m.dbType == "postgres" {
+			query = "SELECT `key`, size, mtime, storage_class, is_dir FROM object_inventory WHERE scan_id = $1"
+		} else {
+			query = "SELECT `key`, size, mtime, storage_class, is_dir FROM object_inventory WHERE scan_id = ?"
+		}
+		rows, err := m.db.Query(query, scanID)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var key, sc string
+			var size int64
+			var mtime sql.NullTime
+			var isDir int
+			if err := rows.Scan(&key, &size, &mtime, &sc, &isDir); err != nil {
+				return nil, err
+			}
+			result[key] = &InventoryRecord{
+				ScanID: scanID, Key: key, Size: size,
+				Mtime: mtime.Time, StorageClass: sc, IsDir: isDir == 1,
+			}
+		}
+		return result, rows.Err()
+	}
+
+	scanA, err := loadScan(scanIDA)
+	if err != nil {
+		return 0, fmt.Errorf("load scan %s: %w", scanIDA, err)
+	}
+	scanB, err := loadScan(scanIDB)
+	if err != nil {
+		return 0, fmt.Errorf("load scan %s: %w", scanIDB, err)
+	}
+
+	f, err := os.Create(output)
+	if err != nil {
+		return 0, fmt.Errorf("create csv: %w", err)
+	}
+	defer f.Close()
+	w := csv.NewWriter(f)
+	defer w.Flush()
+
+	if err := w.Write([]string{"change", "key", "size_a", "mtime_a", "size_b", "mtime_b"}); err != nil {
+		return 0, err
+	}
+
+	count := 0
+
+	// Keys in B but not in A → added
+	// Keys in A but not in B → deleted
+	// Keys in both with different size → modified
+	for key, recB := range scanB {
+		if recA, ok := scanA[key]; ok {
+			if recA.Size != recB.Size || !recA.Mtime.Equal(recB.Mtime) {
+				mta := ""
+				if !recA.Mtime.IsZero() {
+					mta = recA.Mtime.Format(time.RFC3339)
+				}
+				mtb := ""
+				if !recB.Mtime.IsZero() {
+					mtb = recB.Mtime.Format(time.RFC3339)
+				}
+				_ = w.Write([]string{"~", key,
+					fmt.Sprintf("%d", recA.Size), mta,
+					fmt.Sprintf("%d", recB.Size), mtb})
+				count++
+			}
+		} else {
+			mtb := ""
+			if !recB.Mtime.IsZero() {
+				mtb = recB.Mtime.Format(time.RFC3339)
+			}
+			_ = w.Write([]string{"+", key, "0", "", fmt.Sprintf("%d", recB.Size), mtb})
+			count++
+		}
+	}
+	for key, recA := range scanA {
+		if _, ok := scanB[key]; !ok {
+			mta := ""
+			if !recA.Mtime.IsZero() {
+				mta = recA.Mtime.Format(time.RFC3339)
+			}
+			_ = w.Write([]string{"-", key, fmt.Sprintf("%d", recA.Size), mta, "0", ""})
+			count++
+		}
+	}
+
+	logger.Infof("Diff complete: %d differences (scanA=%s scanB=%s output=%s)", count, scanIDA, scanIDB, output)
+	return count, nil
+}
+
 func stringsJoin(elems []string, sep string) string {
 	out := ""
 	for i, e := range elems {
