@@ -356,7 +356,13 @@ func extractToken(uri string) (string, string) {
 	return uri, ""
 }
 
-func createSyncStorage(uri string, conf *sync.Config) (object.ObjectStorage, error) {
+// storageConfig is the minimal interface needed to create a storage backend.
+// Both sync.Config and scan options implement it.
+type storageConfig interface {
+	GetNoHTTPS() bool
+}
+
+func createSyncStorage(uri string, conf storageConfig) (object.ObjectStorage, error) {
 	// nolint:staticcheck
 	uri = strings.TrimPrefix(uri, "sftp://")
 	if !strings.Contains(uri, "://") {
@@ -371,8 +377,6 @@ func createSyncStorage(uri string, conf *sync.Config) (object.ObjectStorage, err
 			if strings.HasSuffix(uri, "/") {
 				absPath += "/"
 			}
-
-			// Windows: file:///C:/a/b/c, Unix: file:///a/b/c
 			uri = "file://" + absPath
 		} else { // sftp
 			var user string
@@ -410,7 +414,7 @@ func createSyncStorage(uri string, conf *sync.Config) (object.ObjectStorage, err
 		endpoint = u.Host
 	} else if name == "nfs" {
 		endpoint = u.Host + u.Path
-	} else if !conf.NoHTTPS && supportHTTPS(name, u.Host) {
+	} else if !conf.GetNoHTTPS() && supportHTTPS(name, u.Host) {
 		endpoint = "https://" + u.Host
 	} else {
 		endpoint = "http://" + u.Host
@@ -418,7 +422,6 @@ func createSyncStorage(uri string, conf *sync.Config) (object.ObjectStorage, err
 
 	isS3PathTypeUrl := isS3PathType(u.Host)
 	if name == "minio" || name == "s3" && isS3PathTypeUrl {
-		// bucket name is part of path
 		endpoint += u.Path
 	}
 
@@ -437,24 +440,10 @@ func createSyncStorage(uri string, conf *sync.Config) (object.ObjectStorage, err
 		return nil, fmt.Errorf("create %s %s: %s", name, endpoint, err)
 	}
 
-	if conf.Links {
-		if _, ok := store.(object.SupportSymlink); !ok {
-			logger.Warnf("storage %s does not support symlink, ignore it", uri)
-			conf.Links = false
-		}
-	}
-
-	if conf.Perms {
-		if _, ok := store.(object.FileSystem); !ok {
-			logger.Warnf("%s is not a file system, can not preserve permissions", store)
-			conf.Perms = false
-		}
-	}
 	switch name {
 	case "file", "nfs":
 	case "minio":
 		if strings.Count(u.Path, "/") > 1 {
-			// skip bucket name
 			store = object.WithPrefix(store, strings.SplitN(u.Path[1:], "/", 2)[1])
 		}
 	case "s3":
@@ -468,7 +457,6 @@ func createSyncStorage(uri string, conf *sync.Config) (object.ObjectStorage, err
 			store = object.WithPrefix(store, u.Path[1:])
 		}
 	}
-
 	return store, nil
 }
 
@@ -526,6 +514,26 @@ func doSync(c *cli.Context) error {
 		object.Shutdown(src)
 		object.Shutdown(dst)
 	}()
+	if config.Links {
+		if _, ok := src.(object.SupportSymlink); !ok {
+			logger.Warnf("source %s does not support symlink, ignore it", src)
+			config.Links = false
+		}
+		if _, ok := dst.(object.SupportSymlink); !ok {
+			logger.Warnf("destination %s does not support symlink, ignore it", dst)
+			config.Links = false
+		}
+	}
+	if config.Perms {
+		if _, ok := src.(object.FileSystem); !ok {
+			logger.Warnf("%s is not a file system, can not preserve permissions", src)
+			config.Perms = false
+		}
+		if _, ok := dst.(object.FileSystem); !ok {
+			logger.Warnf("%s is not a file system, can not preserve permissions", dst)
+			config.Perms = false
+		}
+	}
 	if config.StorageClass != "" {
 		if os, ok := dst.(object.SupportStorageClass); ok {
 			err := os.SetStorageClass(config.StorageClass)

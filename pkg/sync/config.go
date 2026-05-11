@@ -60,6 +60,7 @@ type Config struct {
 	TrafficControlURL string
 	NoHTTPS           bool
 	Verbose           bool
+
 	Quiet             bool
 	CheckAll          bool
 	CheckNew          bool
@@ -165,6 +166,8 @@ func envList() []string {
 		"JUICEFS_LOGLEVEL",
 	}
 }
+
+func (c *Config) GetNoHTTPS() bool { return c.NoHTTPS }
 
 func NewConfigFromCli(c *cli.Context) *Config {
 	if c.Int64("limit") < -1 {

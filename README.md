@@ -136,6 +136,40 @@ Records planned actions during `--dry` mode:
 Auto-generated at the end of each run with aggregate statistics:
 `total_scanned`, `copied`, `skipped`, `extra`, `deleted`, `elapsed_ms`, etc.
 
+## `scan` Command — Object Inventory
+
+Scan a single bucket's metadata (key, size, mtime, storage class) into a database or CSV, with time-range filtering.
+
+```bash
+# Scan all objects to SQLite
+./juicefs-sync scan --db-type sqlite3 --db-dsn /tmp/inv.db s3://mybucket/
+
+# Scan with time range + CSV export
+./juicefs-sync scan --start "2025-01-01" --end "2025-06-30" --export inv.csv s3://mybucket/
+
+# Re-export existing scan_id to CSV
+./juicefs-sync scan --db-type sqlite3 --db-dsn /tmp/inv.db --scan-id scan-xxx --export out.csv
+```
+
+### `object_inventory` table
+
+```sql
+CREATE TABLE object_inventory (
+    scan_id VARCHAR(64) NOT NULL,
+    key VARCHAR(1024) NOT NULL,
+    size BIGINT,
+    mtime DATETIME,
+    storage_class VARCHAR(32),
+    is_dir INT,
+    scanned_at DATETIME,
+    PRIMARY KEY (scan_id, key)
+);
+```
+
+Use cases: storage audit, lifecycle analysis, cost estimation, change detection between scans.
+
+---
+
 ## License
 
 Apache License 2.0 — see [LICENSE](LICENSE).

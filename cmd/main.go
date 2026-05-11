@@ -57,6 +57,7 @@ func Main(args []string) error {
 		Flags:                globalFlags(),
 		Commands: []*cli.Command{
 			cmdSync(),
+			cmdScan(),
 		},
 	}
 	err := app.Run(reorderOptions(app, args))
