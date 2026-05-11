@@ -42,3 +42,10 @@ pkg/meta/testdata
 dist/
 juicefs-sync
 juicefs-sync-advanced
+
+# test artifacts
+a1/
+aaa/
+s/
+t/
+*.db

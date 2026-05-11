@@ -151,6 +151,20 @@ Scan a single bucket's metadata (key, size, mtime, storage class) into a databas
 ./juicefs-sync-advanced scan --db-type sqlite3 --db-dsn /tmp/inv.db --scan-id scan-xxx --export out.csv
 ```
 
+### scan flags
+
+| Flag | Description |
+|------|-------------|
+| `--db-type` | Database type: `mysql`, `postgres`, `sqlite3` |
+| `--db-dsn` | Database DSN |
+| `--prefix` | Only scan objects with the given prefix |
+| `--start` | Only include objects modified after this time |
+| `--end` | Only include objects modified before this time |
+| `--limit N` | Stop after N objects |
+| `--export FILE` | Save results to CSV |
+| `--scan-id ID` | Scan run ID (auto-generated if not set) |
+| `--no-https` | Use HTTP instead of HTTPS (for Ceph/MinIO) |
+
 ### `object_inventory` table
 
 ```sql
@@ -166,7 +180,18 @@ CREATE TABLE object_inventory (
 );
 ```
 
-Use cases: storage audit, lifecycle analysis, cost estimation, change detection between scans.
+### Scan diff: compare two runs
+
+Compare two scan runs to find what changed — useful for migration validation.
+
+```bash
+juicefs-sync-advanced scan \
+  --db-type sqlite3 --db-dsn /tmp/demo.db \
+  --diff-from pre-migration --diff-to post-migration \
+  --export /tmp/diff.csv
+```
+
+Output: CSV with `change` column — `+` (new), `-` (deleted), `~` (modified).
 
 ---
 
