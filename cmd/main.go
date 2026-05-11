@@ -21,7 +21,6 @@ import (
 	"net/http"
 	_ "net/http/pprof"
 	"os"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -39,69 +38,27 @@ import (
 )
 
 var logger = utils.GetLogger("juicefs")
+var cliCtx *cli.Context
 var debugAgent string
 var debugAgentOnce sync.Once
 
 func Main(args []string) error {
-	// we have to call this because gspt removes all arguments
 	gspt.SetProcTitle(strings.Join(os.Args, " "))
 	cli.VersionFlag = &cli.BoolFlag{
 		Name: "version", Aliases: []string{"V"},
 		Usage: "print version only",
 	}
 	app := &cli.App{
-		Name:                 "juicefs",
-		Usage:                "A POSIX file system built on Redis and object storage.",
+		Name:                 "juicefs-sync",
+		Usage:                "A sync tool for object storage",
 		Version:              version.Version(),
 		Copyright:            "Apache License 2.0",
 		HideHelpCommand:      true,
 		EnableBashCompletion: true,
 		Flags:                globalFlags(),
 		Commands: []*cli.Command{
-			cmdFormat(),
-			cmdConfig(),
-			cmdQuota(),
-			cmdDestroy(),
-			cmdGC(),
-			cmdFsck(),
-			cmdRestore(),
-			cmdDump(),
-			cmdLoad(),
-			cmdVersion(),
-			cmdStatus(),
-			cmdStats(),
-			cmdProfile(),
-			cmdInfo(),
-			cmdMount(),
-			cmdUmount(),
-			cmdGateway(),
-			cmdWebDav(),
-			cmdBench(),
-			cmdObjbench(),
-			cmdMdtest(),
-			cmdWarmup(),
-			cmdRmr(),
 			cmdSync(),
-			cmdDebug(),
-			cmdClone(),
-			cmdSummary(),
-			cmdCompact(),
 		},
-	}
-
-	if runtime.GOOS == "windows" {
-		app.Commands = append(app.Commands, cmdPrintSID())
-	}
-
-	if calledViaMount(args) {
-		var err error
-		args, err = handleSysMountArgs(args)
-		if err != nil {
-			return err
-		}
-		if len(args) < 1 {
-			args = []string{"mount", "--help"}
-		}
 	}
 	err := app.Run(reorderOptions(app, args))
 	if errno, ok := err.(syscall.Errno); ok && errno == 0 {
@@ -110,95 +67,10 @@ func Main(args []string) error {
 	return err
 }
 
-func calledViaMount(args []string) bool {
-	if os.Getenv("CALL_VIA_MOUNT") != "" {
-		return true
-	}
-	if strings.HasSuffix(args[0], "/mount.juicefs") {
-		os.Setenv("CALL_VIA_MOUNT", "1")
-		return true
-	}
-	return false
-}
-
-func handleSysMountArgs(args []string) ([]string, error) {
-	optionToCmdFlag := map[string]string{
-		"attrcacheto":     "attr-cache",
-		"entrycacheto":    "entry-cache",
-		"direntrycacheto": "dir-entry-cache",
-	}
-	newArgs := []string{"juicefs", "mount", "-d"}
-	if len(args) < 3 {
-		return nil, nil
-	}
-	mountOptions := args[3:]
-	sysOptions := []string{"_netdev", "nofail", "rw", "defaults", "remount"}
-	fuseOptions := make([]string, 0, 20)
-	cmdFlagsLookup := make(map[string]bool, 20)
-	for _, f := range append(cmdMount().Flags, globalFlags()...) {
-		for _, name := range f.Names() {
-			if len(name) > 1 {
-				_, cmdFlagsLookup[name] = f.(*cli.BoolFlag)
-			}
-		}
-	}
-
-	parseFlag := false
-	for _, option := range mountOptions {
-		if option == "-o" {
-			parseFlag = true
-			continue
-		}
-		if !parseFlag {
-			continue
-		}
-
-		opts := strings.Split(option, ",")
-		for _, opt := range opts {
-			opt = strings.TrimSpace(opt)
-			if opt == "" || opt == "background" || utils.StringContains(sysOptions, opt) {
-				continue
-			}
-			// Lower case option name is preferred, but if it's the same as flag name, we also accept it
-			if strings.Contains(opt, "=") {
-				fields := strings.SplitN(opt, "=", 2)
-				if flagName, ok := optionToCmdFlag[fields[0]]; ok {
-					newArgs = append(newArgs, fmt.Sprintf("--%s=%s", flagName, fields[1]))
-				} else if _, ok := cmdFlagsLookup[fields[0]]; ok {
-					newArgs = append(newArgs, fmt.Sprintf("--%s=%s", fields[0], fields[1]))
-				} else {
-					fuseOptions = append(fuseOptions, opt)
-				}
-			} else if flagName, ok := optionToCmdFlag[opt]; ok {
-				newArgs = append(newArgs, fmt.Sprintf("--%s", flagName))
-			} else if isBool, ok := cmdFlagsLookup[opt]; ok {
-				if !isBool {
-					return nil, fmt.Errorf("option %s requires a value", opt)
-				}
-				newArgs = append(newArgs, fmt.Sprintf("--%s", opt))
-				if opt == "debug" {
-					fuseOptions = append(fuseOptions, opt)
-				}
-			} else {
-				fuseOptions = append(fuseOptions, opt)
-			}
-		}
-
-		parseFlag = false
-	}
-	if len(fuseOptions) > 0 {
-		newArgs = append(newArgs, "-o", strings.Join(fuseOptions, ","))
-	}
-	newArgs = append(newArgs, args[1], args[2])
-	logger.Debug("Parsed mount args: ", strings.Join(newArgs, " "))
-	return newArgs, nil
-}
-
 func isFlag(flags []cli.Flag, option string) (bool, bool) {
 	if !strings.HasPrefix(option, "-") {
 		return false, false
 	}
-	// --V or -v work the same
 	option = strings.TrimLeft(option, "-")
 	for _, flag := range flags {
 		_, isBool := flag.(*cli.BoolFlag)
@@ -230,7 +102,6 @@ func reorderOptions(app *cli.App, args []string) []string {
 			others = append(others, option)
 		}
 	}
-	// no command
 	if len(others) == 0 {
 		return newArgs
 	}
@@ -243,13 +114,10 @@ func reorderOptions(app *cli.App, args []string) []string {
 		}
 	}
 	if cmd == nil {
-		// can't recognize the command, skip it
 		return append(newArgs, others...)
 	}
-
 	newArgs = append(newArgs, cmdName)
 	args, others = others[1:], nil
-	// -h is valid for all the commands
 	cmdFlags := append(cmd.Flags, cli.HelpFlag)
 	for i := 0; i < len(args); i++ {
 		option := args[i]
@@ -269,7 +137,6 @@ func reorderOptions(app *cli.App, args []string) []string {
 	return append(newArgs, others...)
 }
 
-// Check number of positional arguments, set logger level and setup agent if needed
 func setup(c *cli.Context, n int) {
 	setup0(c, n, n)
 }
@@ -277,11 +144,11 @@ func setup(c *cli.Context, n int) {
 func setup0(c *cli.Context, min, max int) {
 	if c.NArg() < min {
 		fmt.Printf("ERROR: This command requires at least %d arguments\n", min)
-		fmt.Printf("USAGE:\n   juicefs %s [command options] %s\n", c.Command.Name, c.Command.ArgsUsage)
+		fmt.Printf("USAGE:\n   juicefs-sync %s [command options] %s\n", c.Command.Name, c.Command.ArgsUsage)
 		os.Exit(1)
 	} else if max > 0 && c.NArg() > max {
 		fmt.Printf("ERROR: This command accept at most %d arguments but got %+v\n", max, c.Args().Slice())
-		fmt.Printf("USAGE:\n   juicefs %s [command options] %s\n", c.Command.Name, c.Command.ArgsUsage)
+		fmt.Printf("USAGE:\n   juicefs-sync %s [command options] %s\n", c.Command.Name, c.Command.ArgsUsage)
 		logger.Exit(1)
 	}
 
@@ -314,7 +181,6 @@ func setup0(c *cli.Context, min, max int) {
 	if c.Bool("no-color") {
 		utils.DisableLogColor()
 	}
-	// set the correct value when it runs inside container
 	if undo, err := maxprocs.Set(maxprocs.Logger(logger.Debugf)); err != nil {
 		undo()
 	}
@@ -340,9 +206,6 @@ func setup0(c *cli.Context, min, max int) {
 	if c.IsSet("pyroscope") {
 		tags := make(map[string]string)
 		appName := fmt.Sprintf("juicefs.%s", c.Command.Name)
-		if c.Command.Name == "mount" {
-			tags["mountpoint"] = c.Args().Get(1)
-		}
 		if hostname, err := os.Hostname(); err == nil {
 			tags["hostname"] = hostname
 		}
