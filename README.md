@@ -1,4 +1,4 @@
-# juicefs-sync-approve
+# juicefs-sync-advanced
 
 **A streamlined object storage sync tool** — extracted from [JuiceFS](https://github.com/juicedata/juicefs), focused solely on the `sync` command with enhanced dry-run, database recording, and performance analysis capabilities.
 
@@ -19,19 +19,19 @@
 ### Build
 
 ```bash
-go build -o juicefs-sync .
+go build -o juicefs-sync-advanced .
 ```
 
 ### Sync between two S3 buckets
 
 ```bash
-./juicefs-sync sync s3://bucket1/path/ s3://bucket2/path/ -p 20
+./juicefs-sync-advanced sync s3://bucket1/path/ s3://bucket2/path/ -p 20
 ```
 
 ### Dry-run with SQLite recording
 
 ```bash
-./juicefs-sync sync \
+./juicefs-sync-advanced sync \
   --dry \
   --record-db-type sqlite3 \
   --record-db-dsn /tmp/sync_analysis.db \
@@ -53,7 +53,7 @@ SELECT * FROM sync_runs ORDER BY started_at DESC;
 ## Usage
 
 ```
-juicefs-sync sync [command options] SRC DST
+juicefs-sync-advanced sync [command options] SRC DST
 ```
 
 ### Key flags
@@ -98,12 +98,12 @@ Supported storage types: `s3`, `oss`, `cos`, `obs`, `gs`, `wasb`, `minio`, `file
 
 **Sync with include/exclude patterns:**
 ```bash
-./juicefs-sync sync --include='logs/**' --exclude='temp/**' s3://src/ /mnt/dst/
+./juicefs-sync-advanced sync --include='logs/**' --exclude='temp/**' s3://src/ /mnt/dst/
 ```
 
 **Migration analysis with Postgres:**
 ```bash
-./juicefs-sync sync --dry \
+./juicefs-sync-advanced sync --dry \
   --record-db-type postgres \
   --record-db-dsn "host=localhost user=app dbname=sync_analysis" \
   --record-plan-table migration_2025 \
@@ -113,10 +113,10 @@ Supported storage types: `s3`, `oss`, `cos`, `obs`, `gs`, `wasb`, `minio`, `file
 **Cluster mode (distributed sync):**
 ```bash
 # Manager node
-./juicefs-sync sync s3://src/ s3://dst/ --worker host1,host2,host3
+./juicefs-sync-advanced sync s3://src/ s3://dst/ --worker host1,host2,host3
 
 # Worker node
-./juicefs-sync sync --manager manager-addr:1234
+./juicefs-sync-advanced sync --manager manager-addr:1234
 ```
 
 ## Database Schema
@@ -142,13 +142,13 @@ Scan a single bucket's metadata (key, size, mtime, storage class) into a databas
 
 ```bash
 # Scan all objects to SQLite
-./juicefs-sync scan --db-type sqlite3 --db-dsn /tmp/inv.db s3://mybucket/
+./juicefs-sync-advanced scan --db-type sqlite3 --db-dsn /tmp/inv.db s3://mybucket/
 
 # Scan with time range + CSV export
-./juicefs-sync scan --start "2025-01-01" --end "2025-06-30" --export inv.csv s3://mybucket/
+./juicefs-sync-advanced scan --start "2025-01-01" --end "2025-06-30" --export inv.csv s3://mybucket/
 
 # Re-export existing scan_id to CSV
-./juicefs-sync scan --db-type sqlite3 --db-dsn /tmp/inv.db --scan-id scan-xxx --export out.csv
+./juicefs-sync-advanced scan --db-type sqlite3 --db-dsn /tmp/inv.db --scan-id scan-xxx --export out.csv
 ```
 
 ### `object_inventory` table

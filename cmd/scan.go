@@ -39,16 +39,16 @@ into a database table or export to CSV. Supports time-range filtering and automa
 
 Examples:
   # Scan all objects and save to SQLite
-  $ juicefs-sync scan --db-type sqlite3 --db-dsn /tmp/inventory.db s3://mybucket/
+  $ juicefs-sync-advanced scan --db-type sqlite3 --db-dsn /tmp/inventory.db s3://mybucket/
 
   # Scan with time range filter and export CSV
-  $ juicefs-sync scan \
+  $ juicefs-sync-advanced scan \
       --start "2025-01-01" --end "2025-06-30" \
       --export /tmp/jan_jun_2025.csv \
       s3://mybucket/
 
   # Re-export existing scan_id to CSV without re-scanning
-  $ juicefs-sync scan --export /tmp/export.csv \
+  $ juicefs-sync-advanced scan --export /tmp/export.csv \
       --db-type sqlite3 --db-dsn /tmp/inventory.db \
       --scan-id scan-1700000000123456789
       `,

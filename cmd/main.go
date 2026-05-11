@@ -48,7 +48,7 @@ func Main(args []string) error {
 		Usage: "print version only",
 	}
 	app := &cli.App{
-		Name:                 "juicefs-sync",
+		Name:                 "juicefs-sync-advanced",
 		Usage:                "A sync tool for object storage",
 		Version:              version.Version(),
 		Copyright:            "Apache License 2.0",
@@ -144,11 +144,11 @@ func setup(c *cli.Context, n int) {
 func setup0(c *cli.Context, min, max int) {
 	if c.NArg() < min {
 		fmt.Printf("ERROR: This command requires at least %d arguments\n", min)
-		fmt.Printf("USAGE:\n   juicefs-sync %s [command options] %s\n", c.Command.Name, c.Command.ArgsUsage)
+		fmt.Printf("USAGE:\n   juicefs-sync-advanced %s [command options] %s\n", c.Command.Name, c.Command.ArgsUsage)
 		os.Exit(1)
 	} else if max > 0 && c.NArg() > max {
 		fmt.Printf("ERROR: This command accept at most %d arguments but got %+v\n", max, c.Args().Slice())
-		fmt.Printf("USAGE:\n   juicefs-sync %s [command options] %s\n", c.Command.Name, c.Command.ArgsUsage)
+		fmt.Printf("USAGE:\n   juicefs-sync-advanced %s [command options] %s\n", c.Command.Name, c.Command.ArgsUsage)
 		logger.Exit(1)
 	}
 

@@ -61,19 +61,19 @@ The include/exclude rules each specify a pattern that is matched against the nam
 
 Examples:
 # Sync object from OSS to S3
-$ juicefs-sync sync oss://mybucket.oss-cn-shanghai.aliyuncs.com s3://mybucket.s3.us-east-2.amazonaws.com
+$ juicefs-sync-advanced sync oss://mybucket.oss-cn-shanghai.aliyuncs.com s3://mybucket.s3.us-east-2.amazonaws.com
 
 # Sync objects from one bucket to another with 50 threads
-$ juicefs-sync sync s3://mybucket.s3.us-east-2.amazonaws.com/ s3://mybucket2.s3.us-east-2.amazonaws.com/ -p 50
+$ juicefs-sync-advanced sync s3://mybucket.s3.us-east-2.amazonaws.com/ s3://mybucket2.s3.us-east-2.amazonaws.com/ -p 50
 
 # SRC: a1/b1,a2/b2,aaa/b1   DST: empty   sync result: aaa/b1
-$ juicefs-sync sync --exclude='a?/b*' s3://mybucket.s3.us-east-2.amazonaws.com/ /mnt/jfs/
+$ juicefs-sync-advanced sync --exclude='a?/b*' s3://mybucket.s3.us-east-2.amazonaws.com/ /mnt/jfs/
 
 # SRC: a1/b1,a2/b2,aaa/b1   DST: empty   sync result: a1/b1,aaa/b1
-$ juicefs-sync sync --include='a1/b1' --exclude='a[1-9]/b*' s3://mybucket.s3.us-east-2.amazonaws.com/ /mnt/jfs/
+$ juicefs-sync-advanced sync --include='a1/b1' --exclude='a[1-9]/b*' s3://mybucket.s3.us-east-2.amazonaws.com/ /mnt/jfs/
 
 # SRC: a1/b1,a2/b2,aaa/b1,b1,b2  DST: empty   sync result: b2
-$ juicefs-sync sync --include='a1/b1' --exclude='a*' --include='b2' --exclude='b?' s3://mybucket.s3.us-east-2.amazonaws.com/ /mnt/jfs/
+$ juicefs-sync-advanced sync --include='a1/b1' --exclude='a*' --include='b2' --exclude='b?' s3://mybucket.s3.us-east-2.amazonaws.com/ /mnt/jfs/
 
 Details: https://juicefs.com/docs/community/administration/sync
 Supported storage systems: https://juicefs.com/docs/community/how_to_setup_object_storage#supported-object-storage`,
