@@ -109,7 +109,23 @@ func doScan(c *cli.Context) error {
 		if export == "" {
 			return fmt.Errorf("--export is required for re-export")
 		}
-		n, err := scan.ExportCSV(dbType, dbDsn, c.String("scan-id"), export)
+		startStr := ""
+		endStr := ""
+		if c.IsSet("start") {
+			t, err := cast.ToTimeInDefaultLocationE(c.String("start"), time.Local)
+			if err != nil {
+				return fmt.Errorf("invalid start time: %s", err)
+			}
+			startStr = t.UTC().Format(time.RFC3339)
+		}
+		if c.IsSet("end") {
+			t, err := cast.ToTimeInDefaultLocationE(c.String("end"), time.Local)
+			if err != nil {
+				return fmt.Errorf("invalid end time: %s", err)
+			}
+			endStr = t.UTC().Format(time.RFC3339)
+		}
+		n, err := scan.ExportCSV(dbType, dbDsn, c.String("scan-id"), startStr, endStr, export)
 		if err != nil {
 			return err
 		}

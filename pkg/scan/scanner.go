@@ -1,11 +1,10 @@
 package scan
 
 import (
+	"database/sql"
 	"encoding/csv"
 	"fmt"
 	"os"
-	"strings"
-	"sync/atomic"
 	"time"
 
 	"github.com/jacksonbean/juicefs-sync-advanced/pkg/object"
@@ -13,16 +12,14 @@ import (
 	"github.com/jacksonbean/juicefs-sync-advanced/pkg/utils"
 )
 
-var scannedCount atomic.Int64
-
 func Run(src object.ObjectStorage, cfg *Config) error {
+	var scannedCount int64
 	scanID := cfg.ScanID
 	if scanID == "" {
 		scanID = fmt.Sprintf("scan-%d", time.Now().UnixNano())
 	}
-
 	scannedAt := time.Now()
-	startKey := ""
+
 	if cfg.StartTime.IsZero() && cfg.EndTime.IsZero() {
 		logger.Infof("Scanning all objects from %s", src)
 	} else {
@@ -30,7 +27,7 @@ func Run(src object.ObjectStorage, cfg *Config) error {
 			src, cfg.StartTime.Format(time.RFC3339), cfg.EndTime.Format(time.RFC3339))
 	}
 
-	// open database if configured
+	// open database
 	var db *inventoryManager
 	if cfg.DBType != "" && cfg.DBDSN != "" {
 		var err error
@@ -41,9 +38,10 @@ func Run(src object.ObjectStorage, cfg *Config) error {
 		defer db.close()
 	}
 
-	// open CSV writer if configured
+	// open CSV writer
 	var csvWriter *csv.Writer
 	var csvFile *os.File
+	var csvErr error
 	if cfg.Export != "" {
 		var err error
 		csvFile, err = os.Create(cfg.Export)
@@ -53,18 +51,15 @@ func Run(src object.ObjectStorage, cfg *Config) error {
 		defer csvFile.Close()
 		csvWriter = csv.NewWriter(csvFile)
 		defer csvWriter.Flush()
-		// header
 		if err := csvWriter.Write([]string{"key", "size", "mtime", "storage_class", "is_dir"}); err != nil {
 			return fmt.Errorf("write csv header: %w", err)
 		}
 	}
 
-	// progress spinner (unknown total)
 	progress := utils.NewProgress(false)
 	spinner := progress.AddCountSpinner("Scanned objects")
 
-	// list objects
-	objChan, err := sync.ListAll(src, cfg.Prefix, startKey, "", false)
+	objChan, err := sync.ListAll(src, cfg.Prefix, "", "", false)
 	if err != nil {
 		return fmt.Errorf("list objects: %w", err)
 	}
@@ -76,19 +71,15 @@ func Run(src object.ObjectStorage, cfg *Config) error {
 		if obj.IsDir() {
 			continue
 		}
-
-		// check limit
-		if cfg.Limit > 0 && scannedCount.Load() >= cfg.Limit {
+		if cfg.Limit > 0 && scannedCount >= cfg.Limit {
 			break
 		}
 
-		// filter by time range
 		mtime := obj.Mtime()
 		if !cfg.StartTime.IsZero() && mtime.Before(cfg.StartTime) {
 			continue
 		}
 		if !cfg.EndTime.IsZero() && mtime.After(cfg.EndTime) {
-			// objects are sorted by key, not by mtime, so we can't break
 			continue
 		}
 
@@ -102,45 +93,43 @@ func Run(src object.ObjectStorage, cfg *Config) error {
 			ScannedAt:    scannedAt,
 		}
 
-		// write to database
 		if db != nil {
 			if err := db.insertRecord(rec); err != nil {
 				logger.Warnf("insert record for %s: %s", rec.Key, err)
 			}
 		}
 
-		// write to CSV
 		if csvWriter != nil {
 			mtimeStr := ""
 			if !mtime.IsZero() {
 				mtimeStr = mtime.Format(time.RFC3339)
 			}
-			_ = csvWriter.Write([]string{
-				rec.Key,
-				fmt.Sprintf("%d", rec.Size),
-				mtimeStr,
-				rec.StorageClass,
-				"false",
-			})
+			if err := csvWriter.Write([]string{
+				rec.Key, fmt.Sprintf("%d", rec.Size), mtimeStr,
+				rec.StorageClass, "false",
+			}); err != nil && csvErr == nil {
+				csvErr = err
+			}
 		}
 
-		scannedCount.Add(1)
+		scannedCount++
 		spinner.Increment()
 	}
 
 	spinner.Done()
-	total := scannedCount.Load()
-	logger.Infof("Scan complete: %d objects scanned (scan_id=%s)", total, scanID)
+	logger.Infof("Scan complete: %d objects scanned (scan_id=%s)", scannedCount, scanID)
 
 	if csvFile != nil {
+		if csvErr != nil {
+			return fmt.Errorf("csv write error: %w", csvErr)
+		}
 		logger.Infof("CSV exported to %s", cfg.Export)
 	}
 	return nil
 }
 
-// ExportCSV exports a scan run from database to CSV file.
-// Returns count of exported rows.
-func ExportCSV(dbType, dsn, scanID, output string) (int, error) {
+// ExportCSV exports a scan run from database to CSV file, optionally filtered by time range.
+func ExportCSV(dbType, dsn, scanID, startTime, endTime, output string) (int, error) {
 	m, err := openInventoryDB(dbType, dsn)
 	if err != nil {
 		return 0, err
@@ -160,23 +149,48 @@ func ExportCSV(dbType, dsn, scanID, output string) (int, error) {
 		return 0, err
 	}
 
+	// Build query with optional time range filters
 	var query string
 	var args []interface{}
 
-	if m.dbType == "mysql" || m.dbType == "sqlite3" {
-		if scanID != "" {
-			query = "SELECT `key`, size, mtime, storage_class, is_dir FROM object_inventory WHERE scan_id = ? ORDER BY `key`"
-			args = []interface{}{scanID}
+	where := ""
+	params := []string{}
+
+	if scanID != "" {
+		if m.dbType == "postgres" {
+			params = append(params, fmt.Sprintf("scan_id = $%d", len(params)+1))
 		} else {
-			query = "SELECT `key`, size, mtime, storage_class, is_dir FROM object_inventory ORDER BY scan_id, `key`"
+			params = append(params, "scan_id = ?")
 		}
-	} else {
-		if scanID != "" {
-			query = "SELECT key, size, mtime, storage_class, is_dir FROM object_inventory WHERE scan_id = $1 ORDER BY key"
-			args = []interface{}{scanID}
+		args = append(args, scanID)
+	}
+	if startTime != "" {
+		if m.dbType == "postgres" {
+			params = append(params, fmt.Sprintf("mtime >= $%d", len(params)+1))
 		} else {
-			query = "SELECT key, size, mtime, storage_class, is_dir FROM object_inventory ORDER BY scan_id, key"
+			params = append(params, "mtime >= ?")
 		}
+		args = append(args, startTime)
+	}
+	if endTime != "" {
+		if m.dbType == "postgres" {
+			params = append(params, fmt.Sprintf("mtime <= $%d", len(params)+1))
+		} else {
+			params = append(params, "mtime <= ?")
+		}
+		args = append(args, endTime)
+	}
+
+	if len(params) > 0 {
+		where = " WHERE " + stringsJoin(params, " AND ")
+	}
+	orderBy := " ORDER BY `key`"
+	if m.dbType == "postgres" {
+		orderBy = " ORDER BY key"
+	}
+	query = fmt.Sprintf("SELECT `key`, size, mtime, storage_class, is_dir FROM object_inventory%s%s", where, orderBy)
+	if m.dbType == "postgres" {
+		query = fmt.Sprintf("SELECT key, size, mtime, storage_class, is_dir FROM object_inventory%s%s", where, orderBy)
 	}
 
 	rows, err := m.db.Query(query, args...)
@@ -189,7 +203,7 @@ func ExportCSV(dbType, dsn, scanID, output string) (int, error) {
 	for rows.Next() {
 		var key, storageClass string
 		var size int64
-		var mtime sqlTime
+		var mtime sql.NullTime
 		var isDir int
 		if err := rows.Scan(&key, &size, &mtime, &storageClass, &isDir); err != nil {
 			return 0, fmt.Errorf("scan row: %w", err)
@@ -198,13 +212,12 @@ func ExportCSV(dbType, dsn, scanID, output string) (int, error) {
 		if mtime.Valid {
 			mtimeStr = mtime.Time.Format(time.RFC3339)
 		}
-		_ = w.Write([]string{
-			key,
-			fmt.Sprintf("%d", size),
-			mtimeStr,
-			storageClass,
+		if err := w.Write([]string{
+			key, fmt.Sprintf("%d", size), mtimeStr, storageClass,
 			fmt.Sprintf("%t", isDir == 1),
-		})
+		}); err != nil {
+			return 0, fmt.Errorf("write csv row: %w", err)
+		}
 		count++
 	}
 	if err := rows.Err(); err != nil {
@@ -213,39 +226,13 @@ func ExportCSV(dbType, dsn, scanID, output string) (int, error) {
 	return count, nil
 }
 
-// sqlTime wraps sql.NullTime for scanning
-type sqlTime struct {
-	Time  time.Time
-	Valid bool
-}
-
-func (t *sqlTime) Scan(value interface{}) error {
-	if value == nil {
-		t.Valid = false
-		return nil
+func stringsJoin(elems []string, sep string) string {
+	out := ""
+	for i, e := range elems {
+		if i > 0 {
+			out += sep
+		}
+		out += e
 	}
-	switch v := value.(type) {
-	case time.Time:
-		t.Time = v
-		t.Valid = true
-	case string:
-		if strings.TrimSpace(v) == "" {
-			t.Valid = false
-			return nil
-		}
-		var err error
-		t.Time, err = time.Parse("2006-01-02 15:04:05", v)
-		if err != nil {
-			t.Time, err = time.Parse(time.RFC3339, v)
-			if err != nil {
-				t.Time, err = time.Parse("2006-01-02T15:04:05Z", v)
-			}
-		}
-		t.Valid = err == nil
-		if !t.Valid {
-			t.Valid = true
-			t.Time, _ = time.Parse("2006-01-02 15:04:05 -0700", strings.ReplaceAll(v, "T", " "))
-		}
-	}
-	return nil
+	return out
 }
