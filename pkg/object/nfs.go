@@ -32,7 +32,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/juicedata/juicefs/pkg/utils"
+	"github.com/jacksonbean/juicefs-sync-advanced/pkg/utils"
 	"github.com/pkg/errors"
 	"github.com/vmware/go-nfs-client/nfs"
 	"github.com/vmware/go-nfs-client/nfs/rpc"

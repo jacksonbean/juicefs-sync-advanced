@@ -38,8 +38,8 @@ import (
 	"github.com/dustin/go-humanize"
 	"github.com/oliverisaac/shellescape"
 
-	"github.com/juicedata/juicefs/pkg/object"
-	"github.com/juicedata/juicefs/pkg/utils"
+	"github.com/jacksonbean/juicefs-sync-advanced/pkg/object"
+	"github.com/jacksonbean/juicefs-sync-advanced/pkg/utils"
 )
 
 // Stat has the counters to represent the progress.

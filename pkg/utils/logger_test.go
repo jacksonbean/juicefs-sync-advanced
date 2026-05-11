@@ -76,13 +76,13 @@ func TestMethodName(t *testing.T) {
 	}, {
 		name: "nested method",
 		args: args{
-			fullFuncName: "github.com/juicedata/juicefs/cmd.watchdog.func1",
+			fullFuncName: "github.com/jacksonbean/juicefs-sync-advanced/cmd.watchdog.func1",
 		},
 		want: "watchdog",
 	}, {
 		name: "multiple inits",
 		args: args{
-			fullFuncName: "github.com/juicedata/juicefs/pkg/utils.init.3.func1",
+			fullFuncName: "github.com/jacksonbean/juicefs-sync-advanced/pkg/utils.init.3.func1",
 		},
 		want: "init",
 	}}

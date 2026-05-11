@@ -40,7 +40,7 @@ import (
 	"github.com/huaweicloud/huaweicloud-sdk-go-obs/obs"
 
 	"github.com/colinmarc/hdfs/v2/hadoopconf"
-	"github.com/juicedata/juicefs/pkg/utils"
+	"github.com/jacksonbean/juicefs-sync-advanced/pkg/utils"
 
 	blob2 "github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/blob"
 

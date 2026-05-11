@@ -33,7 +33,7 @@ import (
 
 	"github.com/pkg/errors"
 
-	"github.com/juicedata/juicefs/pkg/utils"
+	"github.com/jacksonbean/juicefs-sync-advanced/pkg/utils"
 	"github.com/ks3sdklib/aws-sdk-go/aws"
 	"github.com/ks3sdklib/aws-sdk-go/aws/awserr"
 	"github.com/ks3sdklib/aws-sdk-go/aws/credentials"

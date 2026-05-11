@@ -29,7 +29,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/juicedata/juicefs/pkg/utils"
+	"github.com/jacksonbean/juicefs-sync-advanced/pkg/utils"
 )
 
 const (

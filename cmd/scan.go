@@ -20,8 +20,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/juicedata/juicefs/pkg/object"
-	"github.com/juicedata/juicefs/pkg/scan"
+	"github.com/jacksonbean/juicefs-sync-advanced/pkg/object"
+	"github.com/jacksonbean/juicefs-sync-advanced/pkg/scan"
 	"github.com/spf13/cast"
 	"github.com/urfave/cli/v2"
 )
@@ -81,6 +81,11 @@ Examples:
 				Name:  "export",
 				Usage: "export results to CSV file path",
 			},
+			&cli.Int64Flag{
+				Name:  "limit",
+				Value: -1,
+				Usage: "limit the number of objects to scan (-1 is unlimited)",
+			},
 			&cli.StringFlag{
 				Name:  "scan-id",
 				Usage: "scan run ID (auto-generated if not set; when used with existing DB + export, re-exports without scanning)",
@@ -125,6 +130,7 @@ func doScan(c *cli.Context) error {
 		DBDSN:   c.String("db-dsn"),
 		Prefix:  c.String("prefix"),
 		Export:  c.String("export"),
+		Limit:   c.Int64("limit"),
 		Threads: 10,
 	}
 

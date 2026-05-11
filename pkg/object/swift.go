@@ -30,7 +30,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/juicedata/juicefs/pkg/utils"
+	"github.com/jacksonbean/juicefs-sync-advanced/pkg/utils"
 	"github.com/ncw/swift/v2"
 )
 

@@ -8,9 +8,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/juicedata/juicefs/pkg/object"
-	"github.com/juicedata/juicefs/pkg/sync"
-	"github.com/juicedata/juicefs/pkg/utils"
+	"github.com/jacksonbean/juicefs-sync-advanced/pkg/object"
+	"github.com/jacksonbean/juicefs-sync-advanced/pkg/sync"
+	"github.com/jacksonbean/juicefs-sync-advanced/pkg/utils"
 )
 
 var scannedCount atomic.Int64
@@ -59,9 +59,9 @@ func Run(src object.ObjectStorage, cfg *Config) error {
 		}
 	}
 
-	// progress bar
+	// progress spinner (unknown total)
 	progress := utils.NewProgress(false)
-	bar := progress.AddCountBar("Scanned objects", 0)
+	spinner := progress.AddCountSpinner("Scanned objects")
 
 	// list objects
 	objChan, err := sync.ListAll(src, cfg.Prefix, startKey, "", false)
@@ -75,6 +75,11 @@ func Run(src object.ObjectStorage, cfg *Config) error {
 		}
 		if obj.IsDir() {
 			continue
+		}
+
+		// check limit
+		if cfg.Limit > 0 && scannedCount.Load() >= cfg.Limit {
+			break
 		}
 
 		// filter by time range
@@ -119,12 +124,11 @@ func Run(src object.ObjectStorage, cfg *Config) error {
 			})
 		}
 
-		n := scannedCount.Add(1)
-		bar.SetTotal(n)
-		bar.Increment()
+		scannedCount.Add(1)
+		spinner.Increment()
 	}
 
-	bar.Done()
+	spinner.Done()
 	total := scannedCount.Load()
 	logger.Infof("Scan complete: %d objects scanned (scan_id=%s)", total, scanID)
 

@@ -21,7 +21,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/juicedata/juicefs/pkg/object"
+	"github.com/jacksonbean/juicefs-sync-advanced/pkg/object"
 )
 
 type obj struct {

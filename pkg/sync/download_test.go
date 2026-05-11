@@ -22,8 +22,8 @@ import (
 	"os"
 	"testing"
 
-	"github.com/juicedata/juicefs/pkg/object"
-	"github.com/juicedata/juicefs/pkg/utils"
+	"github.com/jacksonbean/juicefs-sync-advanced/pkg/object"
+	"github.com/jacksonbean/juicefs-sync-advanced/pkg/utils"
 )
 
 func TestDownload(t *testing.T) {

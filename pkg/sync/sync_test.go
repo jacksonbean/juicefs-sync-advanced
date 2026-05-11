@@ -26,7 +26,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/juicedata/juicefs/pkg/object"
+	"github.com/jacksonbean/juicefs-sync-advanced/pkg/object"
 )
 
 func collectAll(c <-chan object.Object) []string {

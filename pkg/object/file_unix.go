@@ -24,7 +24,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/juicedata/juicefs/pkg/utils"
+	"github.com/jacksonbean/juicefs-sync-advanced/pkg/utils"
 	"github.com/pkg/sftp"
 )
 

@@ -29,7 +29,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/juicedata/juicefs/pkg/utils"
+	"github.com/jacksonbean/juicefs-sync-advanced/pkg/utils"
 )
 
 var ctx = context.Background()

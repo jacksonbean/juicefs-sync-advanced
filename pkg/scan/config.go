@@ -12,5 +12,6 @@ type Config struct {
 	StartTime time.Time
 	EndTime   time.Time
 	Threads   int
+	Limit     int64
 	Export    string
 }

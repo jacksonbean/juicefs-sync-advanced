@@ -36,7 +36,7 @@ import (
 	"github.com/pkg/errors"
 
 	"github.com/huaweicloud/huaweicloud-sdk-go-obs/obs"
-	"github.com/juicedata/juicefs/pkg/utils"
+	"github.com/jacksonbean/juicefs-sync-advanced/pkg/utils"
 	"golang.org/x/net/http/httpproxy"
 )
 

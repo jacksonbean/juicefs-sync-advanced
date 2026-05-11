@@ -24,7 +24,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/juicedata/juicefs/pkg/utils"
+	"github.com/jacksonbean/juicefs-sync-advanced/pkg/utils"
 )
 
 func TestChecksum(t *testing.T) {

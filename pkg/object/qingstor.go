@@ -33,7 +33,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 
-	"github.com/juicedata/juicefs/pkg/utils"
+	"github.com/jacksonbean/juicefs-sync-advanced/pkg/utils"
 	"github.com/qingstor/qingstor-sdk-go/v4/config"
 	"github.com/qingstor/qingstor-sdk-go/v4/request/errors"
 	qs "github.com/qingstor/qingstor-sdk-go/v4/service"

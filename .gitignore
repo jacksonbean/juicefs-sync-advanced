@@ -41,3 +41,4 @@ pkg/meta/testdata
 /juicefs.lite
 dist/
 juicefs-sync
+juicefs-sync-advanced

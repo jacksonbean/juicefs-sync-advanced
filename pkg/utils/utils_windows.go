@@ -22,7 +22,7 @@ import (
 	"strconv"
 	"syscall"
 
-	"github.com/juicedata/juicefs/pkg/win"
+	"github.com/jacksonbean/juicefs-sync-advanced/pkg/win"
 	"golang.org/x/sys/windows"
 )
 

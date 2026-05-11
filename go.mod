@@ -1,4 +1,4 @@
-module github.com/juicedata/juicefs
+module github.com/jacksonbean/juicefs-sync-advanced
 
 go 1.23.0
 

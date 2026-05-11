@@ -19,8 +19,8 @@ package main
 import (
 	"os"
 
-	"github.com/juicedata/juicefs/cmd"
-	"github.com/juicedata/juicefs/pkg/utils"
+	"github.com/jacksonbean/juicefs-sync-advanced/cmd"
+	"github.com/jacksonbean/juicefs-sync-advanced/pkg/utils"
 )
 
 var logger = utils.GetLogger("juicefs")

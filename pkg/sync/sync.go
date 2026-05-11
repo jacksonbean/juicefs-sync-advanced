@@ -38,9 +38,9 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/juicedata/juicefs/pkg/object"
-	"github.com/juicedata/juicefs/pkg/sync/record"
-	"github.com/juicedata/juicefs/pkg/utils"
+	"github.com/jacksonbean/juicefs-sync-advanced/pkg/object"
+	"github.com/jacksonbean/juicefs-sync-advanced/pkg/sync/record"
+	"github.com/jacksonbean/juicefs-sync-advanced/pkg/utils"
 	"github.com/juju/ratelimit"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/vimeo/go-util/crc32combine"

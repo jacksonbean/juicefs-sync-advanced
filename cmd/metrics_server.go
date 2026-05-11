@@ -20,8 +20,8 @@ import (
 	"net"
 	"net/http"
 
-	"github.com/juicedata/juicefs/pkg/metric"
-	"github.com/juicedata/juicefs/pkg/utils"
+	"github.com/jacksonbean/juicefs-sync-advanced/pkg/metric"
+	"github.com/jacksonbean/juicefs-sync-advanced/pkg/utils"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"

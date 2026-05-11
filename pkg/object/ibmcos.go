@@ -37,7 +37,7 @@ import (
 	"github.com/IBM/ibm-cos-sdk-go/aws/request"
 	"github.com/IBM/ibm-cos-sdk-go/aws/session"
 	"github.com/IBM/ibm-cos-sdk-go/service/s3"
-	"github.com/juicedata/juicefs/pkg/utils"
+	"github.com/jacksonbean/juicefs-sync-advanced/pkg/utils"
 	"github.com/pkg/errors"
 )
 

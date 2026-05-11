@@ -25,7 +25,7 @@ import (
 
 	consulapi "github.com/hashicorp/consul/api"
 	"github.com/hashicorp/go-hclog"
-	"github.com/juicedata/juicefs/pkg/utils"
+	"github.com/jacksonbean/juicefs-sync-advanced/pkg/utils"
 	"github.com/prometheus/client_golang/prometheus"
 )
 

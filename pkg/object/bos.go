@@ -36,7 +36,7 @@ import (
 	"github.com/baidubce/bce-sdk-go/bce"
 	"github.com/baidubce/bce-sdk-go/services/bos"
 	"github.com/baidubce/bce-sdk-go/services/bos/api"
-	"github.com/juicedata/juicefs/pkg/utils"
+	"github.com/jacksonbean/juicefs-sync-advanced/pkg/utils"
 )
 
 type bosclient struct {
