@@ -447,9 +447,16 @@ func createSyncStorage(uri string, conf storageConfig) (object.ObjectStorage, er
 			store = object.WithPrefix(store, strings.SplitN(u.Path[1:], "/", 2)[1])
 		}
 	case "s3":
-		if isS3PathTypeUrl && strings.Count(u.Path, "/") > 1 {
-			store = object.WithPrefix(store, strings.SplitN(u.Path[1:], "/", 2)[1])
+		if isS3PathTypeUrl {
+			if strings.Count(u.Path, "/") > 1 {
+				// path-style: /bucket/prefix/... → only the prefix part after bucket
+				parts := strings.SplitN(u.Path[1:], "/", 2)
+				if len(parts) > 1 && parts[1] != "" {
+					store = object.WithPrefix(store, parts[1])
+				}
+			}
 		} else if len(u.Path) > 1 {
+			// virtual-hosted style: the whole path is a prefix within the bucket
 			store = object.WithPrefix(store, u.Path[1:])
 		}
 	default:

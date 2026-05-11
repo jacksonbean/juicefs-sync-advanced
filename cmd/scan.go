@@ -53,6 +53,10 @@ Examples:
       --scan-id scan-1700000000123456789
       `,
 		Flags: []cli.Flag{
+			&cli.BoolFlag{
+				Name:  "no-https",
+				Usage: "don't use HTTPS",
+			},
 			&cli.StringFlag{
 				Name:  "db-type",
 				Usage: "database type for saving inventory (mysql, postgres, sqlite3)",
@@ -145,7 +149,7 @@ func doScan(c *cli.Context) error {
 	}
 
 	// reuse the same createSyncStorage used by sync command
-	storeConfig := &scanStoreConfig{}
+	storeConfig := &scanStoreConfig{noHTTPS: c.Bool("no-https")}
 	src, err := createSyncStorage(srcURL, storeConfig)
 	if err != nil {
 		return err
@@ -156,6 +160,8 @@ func doScan(c *cli.Context) error {
 }
 
 // scanStoreConfig implements storageConfig for the scan command.
-type scanStoreConfig struct{}
+type scanStoreConfig struct {
+	noHTTPS bool
+}
 
-func (s *scanStoreConfig) GetNoHTTPS() bool { return false }
+func (s *scanStoreConfig) GetNoHTTPS() bool { return s.noHTTPS }
