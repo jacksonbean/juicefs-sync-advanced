@@ -13,5 +13,6 @@ type Config struct {
 	EndTime   time.Time
 	Threads   int
 	Limit     int64
+	WithHead  bool
 	Export    string
 }

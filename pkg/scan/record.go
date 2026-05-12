@@ -21,6 +21,7 @@ type InventoryRecord struct {
 	Size         int64
 	Mtime        time.Time
 	StorageClass string
+	ETag         string
 	IsDir        bool
 	ScannedAt    time.Time
 }
@@ -77,6 +78,7 @@ func (m *inventoryManager) createTable() error {
 		size BIGINT,
 		mtime DATETIME,
 		storage_class VARCHAR(32),
+		etag VARCHAR(64),
 		is_dir INT,
 		scanned_at DATETIME,
 		%s
@@ -116,31 +118,31 @@ func (m *inventoryManager) insertRecord(r *InventoryRecord) error {
 
 	switch m.dbType {
 	case "mysql":
-		query := `INSERT INTO object_inventory (scan_id, key, size, mtime, storage_class, is_dir, scanned_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?)
+		query := `INSERT INTO object_inventory (scan_id, key, size, mtime, storage_class, etag, is_dir, scanned_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 			ON DUPLICATE KEY UPDATE
 			size = VALUES(size), mtime = VALUES(mtime),
-			storage_class = VALUES(storage_class), is_dir = VALUES(is_dir),
-			scanned_at = VALUES(scanned_at)`
-		_, err := m.db.Exec(query, r.ScanID, r.Key, r.Size, nullTime(r.Mtime), r.StorageClass, isDir, nullTime(r.ScannedAt))
+			storage_class = VALUES(storage_class), etag = VALUES(etag),
+			is_dir = VALUES(is_dir), scanned_at = VALUES(scanned_at)`
+		_, err := m.db.Exec(query, r.ScanID, r.Key, r.Size, nullTime(r.Mtime), r.StorageClass, r.ETag, isDir, nullTime(r.ScannedAt))
 		return err
 	case "sqlite3":
-		query := `INSERT INTO object_inventory (scan_id, key, size, mtime, storage_class, is_dir, scanned_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?)
+		query := `INSERT INTO object_inventory (scan_id, key, size, mtime, storage_class, etag, is_dir, scanned_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT (scan_id, key) DO UPDATE SET
 			size = EXCLUDED.size, mtime = EXCLUDED.mtime,
-			storage_class = EXCLUDED.storage_class, is_dir = EXCLUDED.is_dir,
-			scanned_at = EXCLUDED.scanned_at`
-		_, err := m.db.Exec(query, r.ScanID, r.Key, r.Size, nullTime(r.Mtime), r.StorageClass, isDir, nullTime(r.ScannedAt))
+			storage_class = EXCLUDED.storage_class, etag = EXCLUDED.etag,
+			is_dir = EXCLUDED.is_dir, scanned_at = EXCLUDED.scanned_at`
+		_, err := m.db.Exec(query, r.ScanID, r.Key, r.Size, nullTime(r.Mtime), r.StorageClass, r.ETag, isDir, nullTime(r.ScannedAt))
 		return err
 	default: // postgres
-		query := `INSERT INTO object_inventory (scan_id, key, size, mtime, storage_class, is_dir, scanned_at)
-			VALUES ($1, $2, $3, $4, $5, $6, $7)
+		query := `INSERT INTO object_inventory (scan_id, key, size, mtime, storage_class, etag, is_dir, scanned_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 			ON CONFLICT (scan_id, key) DO UPDATE SET
 			size = EXCLUDED.size, mtime = EXCLUDED.mtime,
-			storage_class = EXCLUDED.storage_class, is_dir = EXCLUDED.is_dir,
-			scanned_at = EXCLUDED.scanned_at`
-		_, err := m.db.Exec(query, r.ScanID, r.Key, r.Size, nullTime(r.Mtime), r.StorageClass, isDir, nullTime(r.ScannedAt))
+			storage_class = EXCLUDED.storage_class, etag = EXCLUDED.etag,
+			is_dir = EXCLUDED.is_dir, scanned_at = EXCLUDED.scanned_at`
+		_, err := m.db.Exec(query, r.ScanID, r.Key, r.Size, nullTime(r.Mtime), r.StorageClass, r.ETag, isDir, nullTime(r.ScannedAt))
 		return err
 	}
 }

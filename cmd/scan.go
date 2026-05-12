@@ -81,6 +81,10 @@ Examples:
 				Name:  "export",
 				Usage: "export results to CSV file path",
 			},
+			&cli.BoolFlag{
+				Name:  "with-head",
+				Usage: "enable per-object HEAD requests to capture ETag (slower but includes ETag)",
+			},
 			&cli.Int64Flag{
 				Name:  "limit",
 				Value: -1,
@@ -178,8 +182,9 @@ func doScan(c *cli.Context) error {
 		DBDSN:   c.String("db-dsn"),
 		Prefix:  c.String("prefix"),
 		Export:  c.String("export"),
-		Limit:   c.Int64("limit"),
-		Threads: 10,
+		Limit:     c.Int64("limit"),
+		WithHead:  c.Bool("with-head"),
+		Threads:   10,
 	}
 
 	// must have at least one output destination

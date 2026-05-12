@@ -46,6 +46,11 @@ func (o *obj) IsDir() bool          { return o.isDir }
 func (o *obj) IsSymlink() bool      { return false }
 func (o *obj) StorageClass() string { return o.sc }
 
+// ObjectWithETag is an optional interface for objects that expose ETag.
+type ObjectWithETag interface {
+	ETag() string
+}
+
 type MultipartUpload struct {
 	MinPartSize int
 	MaxCount    int

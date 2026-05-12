@@ -38,10 +38,22 @@ func Run(src object.ObjectStorage, cfg *Config) error {
 		defer db.close()
 	}
 
+	// ETag capture via optional interface
+	hasETag := false
+	if cfg.WithHead {
+		if _, ok := src.(object.ObjectWithETag); ok {
+			hasETag = true
+		}
+	}
+
 	// open CSV writer
 	var csvWriter *csv.Writer
 	var csvFile *os.File
 	var csvErr error
+	csvHeader := []string{"key", "size", "mtime", "storage_class", "is_dir"}
+	if hasETag {
+		csvHeader = []string{"key", "size", "mtime", "storage_class", "etag", "is_dir"}
+	}
 	if cfg.Export != "" {
 		var err error
 		csvFile, err = os.Create(cfg.Export)
@@ -51,7 +63,7 @@ func Run(src object.ObjectStorage, cfg *Config) error {
 		defer csvFile.Close()
 		csvWriter = csv.NewWriter(csvFile)
 		defer csvWriter.Flush()
-		if err := csvWriter.Write([]string{"key", "size", "mtime", "storage_class", "is_dir"}); err != nil {
+		if err := csvWriter.Write(csvHeader); err != nil {
 			return fmt.Errorf("write csv header: %w", err)
 		}
 	}
@@ -83,12 +95,20 @@ func Run(src object.ObjectStorage, cfg *Config) error {
 			continue
 		}
 
+		etag := ""
+		if hasETag {
+			if o, ok := obj.(object.ObjectWithETag); ok {
+				etag = o.ETag()
+			}
+		}
+
 		rec := &InventoryRecord{
 			ScanID:       scanID,
 			Key:          obj.Key(),
 			Size:         obj.Size(),
 			Mtime:        mtime,
 			StorageClass: obj.StorageClass(),
+			ETag:         etag,
 			IsDir:        false,
 			ScannedAt:    scannedAt,
 		}
@@ -104,10 +124,15 @@ func Run(src object.ObjectStorage, cfg *Config) error {
 			if !mtime.IsZero() {
 				mtimeStr = mtime.Format(time.RFC3339)
 			}
-			if err := csvWriter.Write([]string{
-				rec.Key, fmt.Sprintf("%d", rec.Size), mtimeStr,
-				rec.StorageClass, "false",
-			}); err != nil && csvErr == nil {
+			var row []string
+			if hasETag {
+				row = []string{rec.Key, fmt.Sprintf("%d", rec.Size), mtimeStr,
+					rec.StorageClass, rec.ETag, "false"}
+			} else {
+				row = []string{rec.Key, fmt.Sprintf("%d", rec.Size), mtimeStr,
+					rec.StorageClass, "false"}
+			}
+			if err := csvWriter.Write(row); err != nil && csvErr == nil {
 				csvErr = err
 			}
 		}
