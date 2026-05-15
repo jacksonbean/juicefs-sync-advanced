@@ -58,20 +58,60 @@ const (
 	markChecksum    = -4
 )
 
-var (
-	handled                 *utils.Bar
-	pending                 *utils.Bar
-	copied, copiedBytes     *utils.Bar
-	checked, checkedBytes   *utils.Bar
-	skipped, skippedBytes   *utils.Bar
+// SyncState encapsulates all shared state for a sync operation.
+// This eliminates global variable race conditions in concurrent goroutines.
+type SyncState struct {
+	handled, pending *utils.Bar
+	copied, copiedBytes, checked, checkedBytes *utils.Bar
+	skipped, skippedBytes *utils.Bar
 	excluded, excludedBytes *utils.Bar
-	extra, extraBytes       *utils.Bar
-	deleted, failed         *utils.Bar
-	listedPrefix            *utils.Bar
-	concurrent              chan int
-	limiter                 *mixedLimiter
-	totalHandled            atomic.Int64
-)
+	extra, extraBytes *utils.Bar
+	deleted, failed *utils.Bar
+	listedPrefix *utils.Bar
+	concurrent chan int
+	limiter *mixedLimiter
+	totalHandled atomic.Int64
+}
+
+// NewSyncState creates a new SyncState with initialized progress bars.
+func NewSyncState(threads int) *SyncState {
+	s := &SyncState{
+		concurrent: make(chan int, threads),
+	}
+	return s
+}
+
+func (s *SyncState) InitBars(verbose, quiet, managerMode bool) {
+	progress := utils.NewProgress(verbose || quiet || managerMode)
+	s.handled = progress.AddCountBar("Scanned objects", 0)
+	s.excluded = progress.AddCountSpinner("Excluded objects")
+	s.excludedBytes = progress.AddByteSpinner("Excluded bytes")
+	s.skipped = progress.AddCountSpinner("Skipped objects")
+	s.skippedBytes = progress.AddByteSpinner("Skipped bytes")
+	s.extra = progress.AddCountSpinner("Extra objects")
+	s.extraBytes = progress.AddByteSpinner("Extra bytes")
+	s.pending = progress.AddCountSpinner("Pending objects")
+	s.copied = progress.AddCountSpinner("Copied objects")
+	s.copiedBytes = progress.AddByteSpinner("Copied bytes")
+}
+
+func (s *SyncState) IncrTotal(n int64) {
+	s.totalHandled.Add(n)
+}
+
+func (s *SyncState) IncrHandled(n int) {
+	old := s.totalHandled.Swap(0)
+	s.handled.IncrTotal(old)
+	s.handled.IncrBy(n)
+}
+
+func (s *SyncState) Concurrent() chan int {
+	return s.concurrent
+}
+
+func (s *SyncState) SetLimiter(l *mixedLimiter) {
+	s.limiter = l
+}
 
 type mixedLimiter struct {
 	global *globalLimit
@@ -191,16 +231,26 @@ func (l *globalLimit) checkBalance() {
 
 var crcTable = crc32.MakeTable(crc32.Castagnoli)
 var logger = utils.GetLogger("juicefs")
+
+// ctx is the default context used for IO operations.
+// It's initialized with context.Background() and can be replaced via SetContext.
 var ctx = context.Background()
 
-func incrTotal(n int64) {
-	totalHandled.Add(n)
+// SetContext replaces the default context used for IO operations.
+func SetContext(newCtx context.Context) {
+	ctx = newCtx
 }
 
-func incrHandled(n int) {
-	old := totalHandled.Swap(0)
-	handled.IncrTotal(old)
-	handled.IncrBy(n)
+// syncState is the global state used when config.State is nil (e.g., in tests).
+var syncState atomic.Pointer[SyncState]
+
+// getState returns the appropriate SyncState, using config.State if available,
+// or falling back to the global syncState for backward compatibility.
+func getState(config *Config) *SyncState {
+	if config != nil && config.State != nil {
+		return config.State
+	}
+	return syncState.Load()
 }
 
 type chksumReader struct {
@@ -239,6 +289,11 @@ func formatSize(bytes int64) string {
 
 // ListAll on all the keys that starts at marker from object storage.
 func ListAll(store object.ObjectStorage, prefix, start, end string, followLink bool) (<-chan object.Object, error) {
+	return ListAllWithCtx(context.Background(), store, prefix, start, end, followLink)
+}
+
+// ListAllWithCtx lists all keys with an explicit context.
+func ListAllWithCtx(ctx context.Context, store object.ObjectStorage, prefix, start, end string, followLink bool) (<-chan object.Object, error) {
 	startTime := time.Now()
 	logger.Debugf("Iterating objects from %s with prefix %s start %q", store, prefix, start)
 
@@ -375,18 +430,19 @@ func try(n int, f func() error, onRetry ...func(int, error)) (err error) {
 	return
 }
 
-func deleteObj(storage object.ObjectStorage, key string, dry bool) {
-	if dry {
+func deleteObj(storage object.ObjectStorage, key string, config *Config) {
+	state := getState(config)
+	if config.Dry {
 		logger.Debugf("Will delete %s from %s", key, storage)
-		deleted.Increment()
+		state.deleted.Increment()
 		return
 	}
 	start := time.Now()
 	if err := try(3, func() error { return storage.Delete(ctx, key) }); err == nil {
-		deleted.Increment()
+		state.deleted.Increment()
 		logger.Debugf("Deleted %s from %s in %s", key, storage, time.Since(start))
 	} else {
-		failed.Increment()
+		state.failed.Increment()
 		logger.Errorf("Failed to delete %s from %s in %s: %s", key, storage, time.Since(start), err)
 	}
 }
@@ -413,16 +469,17 @@ func copyPerms(dst object.ObjectStorage, obj object.Object, config *Config) {
 	logger.Debugf("Copied permissions (%s:%s:%s) for %s in %s", fi.Owner(), fi.Group(), fi.Mode(), key, time.Since(start))
 }
 
-func calPartChksum(objStor object.ObjectStorage, key string, abort chan struct{}, offset, length int64) (uint32, error) {
-	if limiter != nil {
-		limiter.Wait(length)
+func calPartChksum(objStor object.ObjectStorage, key string, abort chan struct{}, config *Config, offset, length int64) (uint32, error) {
+	state := getState(config)
+	if state.limiter != nil {
+		state.limiter.Wait(length)
 	}
 	select {
 	case <-abort:
 		return 0, fmt.Errorf("aborted")
-	case concurrent <- 1:
+	case state.concurrent <- 1:
 		defer func() {
-			<-concurrent
+			<-state.concurrent
 		}()
 	}
 	in, err := objStor.Get(ctx, key, offset, length)
@@ -448,11 +505,11 @@ func calPartChksum(objStor object.ObjectStorage, key string, abort chan struct{}
 	return chksum, nil
 }
 
-func calObjChksum(objStor object.ObjectStorage, key string, abort chan struct{}, obj object.Object) (uint32, error) {
+func calObjChksum(objStor object.ObjectStorage, key string, abort chan struct{}, obj object.Object, config *Config) (uint32, error) {
 	var err error
 	var chksum uint32
 	if obj.Size() < maxBlock {
-		return calPartChksum(objStor, key, abort, 0, obj.Size())
+		return calPartChksum(objStor, key, abort, config, 0, obj.Size())
 	}
 	n := int((obj.Size()-1)/defaultPartSize) + 1
 	errs := make(chan error, n)
@@ -463,7 +520,7 @@ func calObjChksum(objStor object.ObjectStorage, key string, abort chan struct{},
 			if num == n-1 {
 				sz = obj.Size() - int64(num)*defaultPartSize
 			}
-			chksum, err := calPartChksum(objStor, key, abort, int64(num)*defaultPartSize, sz)
+			chksum, err := calPartChksum(objStor, key, abort, config, int64(num)*defaultPartSize, sz)
 			chksums[num] = chksumWithSz{chksum, sz}
 			errs <- err
 		}(i)
@@ -484,16 +541,17 @@ func calObjChksum(objStor object.ObjectStorage, key string, abort chan struct{},
 	return chksum, nil
 }
 
-func compObjPartBinary(src, dst object.ObjectStorage, key string, abort chan struct{}, offset, length int64) error {
-	if limiter != nil {
-		limiter.Wait(length)
+func compObjPartBinary(src, dst object.ObjectStorage, key string, abort chan struct{}, config *Config, offset, length int64) error {
+	state := getState(config)
+	if state.limiter != nil {
+		state.limiter.Wait(length)
 	}
 	select {
 	case <-abort:
 		return fmt.Errorf("aborted")
-	case concurrent <- 1:
+	case state.concurrent <- 1:
 		defer func() {
-			<-concurrent
+			<-state.concurrent
 		}()
 	}
 	in, err := src.Get(ctx, key, offset, length)
@@ -531,10 +589,10 @@ func compObjPartBinary(src, dst object.ObjectStorage, key string, abort chan str
 	return nil
 }
 
-func compObjBinary(src, dst object.ObjectStorage, key string, abort chan struct{}, obj object.Object) (bool, error) {
+func compObjBinary(src, dst object.ObjectStorage, key string, abort chan struct{}, obj object.Object, config *Config) (bool, error) {
 	var err error
 	if obj.Size() < maxBlock {
-		err = compObjPartBinary(src, dst, key, abort, 0, obj.Size())
+		err = compObjPartBinary(src, dst, key, abort, config, 0, obj.Size())
 	} else {
 		n := int((obj.Size()-1)/defaultPartSize) + 1
 		errs := make(chan error, n)
@@ -544,7 +602,7 @@ func compObjBinary(src, dst object.ObjectStorage, key string, abort chan struct{
 				if num == n-1 {
 					sz = obj.Size() - int64(num)*defaultPartSize
 				}
-				errs <- compObjPartBinary(src, dst, key, abort, int64(num)*defaultPartSize, sz)
+				errs <- compObjPartBinary(src, dst, key, abort, config, int64(num)*defaultPartSize, sz)
 			}(i)
 		}
 		for i := 0; i < n; i++ {
@@ -586,25 +644,26 @@ func doCheckSum(src, dst object.ObjectStorage, key string, srcChksumPtr *uint32,
 		var srcChksum uint32
 		var dstChksum uint32
 		srcChksum = *srcChksumPtr
-		dstChksum, err = calObjChksum(dst, key, abort, obj)
+		dstChksum, err = calObjChksum(dst, key, abort, obj, config)
 		if err == nil {
 			*equal = srcChksum == dstChksum
 		} else {
 			*equal = false
 		}
 	} else {
-		*equal, err = compObjBinary(src, dst, key, abort, obj)
+		*equal, err = compObjBinary(src, dst, key, abort, obj, config)
 	}
 	return err
 }
 
 func checkSum(src, dst object.ObjectStorage, key string, srcChksum *uint32, obj object.Object, config *Config) (bool, error) {
+	state := getState(config)
 	start := time.Now()
 	var equal bool
 	err := try(3, func() error { return doCheckSum(src, dst, key, srcChksum, obj, config, &equal) })
 	if err == nil {
-		checked.Increment()
-		checkedBytes.IncrInt64(obj.Size())
+		state.checked.Increment()
+		state.checkedBytes.IncrInt64(obj.Size())
 		if equal {
 			logger.Debugf("Checked %s OK (and equal) in %s,", key, time.Since(start))
 		} else {
@@ -625,11 +684,12 @@ func inMap(obj object.ObjectStorage, m map[string]struct{}) bool {
 	return ok
 }
 
-func doCopySingle(src, dst object.ObjectStorage, key string, size int64, calChksum bool) (uint32, error) {
+func doCopySingle(src, dst object.ObjectStorage, key string, size int64, calChksum bool, config *Config) (uint32, error) {
+	state := getState(config)
 	if size > maxBlock && !inMap(dst, readInMem) && !inMap(src, fastStreamRead) {
 		var err error
 		var in io.Reader
-		downer := newParallelDownloader(src, key, size, downloadBufSize, concurrent)
+		downer := newParallelDownloaderWithState(src, key, size, downloadBufSize, state)
 		defer downer.Close()
 		if inMap(dst, streamWrite) {
 			in = downer
@@ -638,7 +698,7 @@ func doCopySingle(src, dst object.ObjectStorage, key string, size int64, calChks
 			// download the object into disk
 			if f, err = os.CreateTemp("", "rep"); err != nil {
 				logger.Warnf("create temp file: %s", err)
-				return doCopySingle0(src, dst, key, size, calChksum)
+				return doCopySingle0(src, dst, key, size, calChksum, config)
 			}
 			_ = os.Remove(f.Name()) // will be deleted after Close()
 			defer f.Close()
@@ -662,13 +722,14 @@ func doCopySingle(src, dst object.ObjectStorage, key string, size int64, calChks
 		}
 		return r.chksum, err
 	}
-	return doCopySingle0(src, dst, key, size, calChksum)
+	return doCopySingle0(src, dst, key, size, calChksum, config)
 }
 
-func doCopySingle0(src, dst object.ObjectStorage, key string, size int64, calChksum bool) (uint32, error) {
-	concurrent <- 1
+func doCopySingle0(src, dst object.ObjectStorage, key string, size int64, calChksum bool, config *Config) (uint32, error) {
+	state := getState(config)
+	state.concurrent <- 1
 	defer func() {
-		<-concurrent
+		<-state.concurrent
 	}()
 	var in io.ReadCloser
 	var err error
@@ -701,20 +762,23 @@ func doCopySingle0(src, dst object.ObjectStorage, key string, size int64, calChk
 	}
 	r := &chksumReader{in, 0, calChksum}
 	defer in.Close()
-	err = dst.Put(ctx, key, &withProgress{r})
+	err = dst.Put(ctx, key, &withProgress{r, state})
 	return r.chksum, err
 }
 
 type withProgress struct {
 	r io.Reader
+	s *SyncState
 }
 
 func (w *withProgress) Read(b []byte) (int, error) {
-	if limiter != nil {
-		limiter.Wait(int64(len(b)))
+	if w.s != nil && w.s.limiter != nil {
+		w.s.limiter.Wait(int64(len(b)))
 	}
 	n, err := w.r.Read(b)
-	copiedBytes.IncrInt64(int64(n))
+	if w.s != nil {
+		w.s.copiedBytes.IncrInt64(int64(n))
+	}
 	return n, err
 }
 
@@ -747,9 +811,10 @@ func init() {
 	}
 }
 
-func doUploadPart(src, dst object.ObjectStorage, srckey string, off, size int64, key, uploadID string, num int, calChksum bool) (*object.Part, uint32, error) {
-	if limiter != nil {
-		limiter.Wait(size)
+func doUploadPart(src, dst object.ObjectStorage, srckey string, off, size int64, key, uploadID string, num int, calChksum bool, config *Config) (*object.Part, uint32, error) {
+	state := getState(config)
+	if state.limiter != nil {
+		state.limiter.Wait(size)
 	}
 	start := time.Now()
 	sz := size
@@ -777,7 +842,7 @@ func doUploadPart(src, dst object.ObjectStorage, srckey string, off, size int64,
 		return nil, 0, fmt.Errorf("part %d: %s", num, err)
 	}
 	logger.Debugf("Copied data of %s part %d in %s", key, num, time.Since(start))
-	copiedBytes.IncrInt64(sz)
+	state.copiedBytes.IncrInt64(sz)
 	return part, chksum, nil
 }
 
@@ -793,19 +858,20 @@ func choosePartSize(upload *object.MultipartUpload, size int64) int64 {
 	return partSize
 }
 
-func doCopyRange(src, dst object.ObjectStorage, key string, off, size int64, upload *object.MultipartUpload, num int, abort chan struct{}, calChksum bool) (*object.Part, uint32, error) {
+func doCopyRange(src, dst object.ObjectStorage, key string, off, size int64, upload *object.MultipartUpload, num int, abort chan struct{}, calChksum bool, config *Config) (*object.Part, uint32, error) {
+	state := getState(config)
 	select {
 	case <-abort:
 		return nil, 0, fmt.Errorf("aborted")
-	case concurrent <- 1:
+	case state.concurrent <- 1:
 		defer func() {
-			<-concurrent
+			<-state.concurrent
 		}()
 	}
 
 	limits := dst.Limits()
 	if size <= 32<<20 || !limits.IsSupportUploadPartCopy {
-		return doUploadPart(src, dst, key, off, size, key, upload.UploadID, num, calChksum)
+		return doUploadPart(src, dst, key, off, size, key, upload.UploadID, num, calChksum, config)
 	}
 
 	tmpkey := fmt.Sprintf("%s.part%d", key, num)
@@ -838,7 +904,7 @@ func doCopyRange(src, dst object.ObjectStorage, key string, off, size int64, upl
 		default:
 		}
 		var chksum uint32
-		parts[i], chksum, err = doUploadPart(src, dst, key, off+int64(i)*partSize, sz, tmpkey, up.UploadID, i, calChksum)
+		parts[i], chksum, err = doUploadPart(src, dst, key, off+int64(i)*partSize, sz, tmpkey, up.UploadID, i, calChksum, config)
 		if err != nil {
 			dst.AbortUpload(ctx, tmpkey, up.UploadID)
 			return nil, 0, fmt.Errorf("range(%d,%d): %s", off, size, err)
@@ -867,7 +933,7 @@ func doCopyRange(src, dst object.ObjectStorage, key string, off, size int64, upl
 	return part, tmpChksum, err
 }
 
-func doCopyMultiple(src, dst object.ObjectStorage, key string, size int64, upload *object.MultipartUpload, calChksum bool) (uint32, error) {
+func doCopyMultiple(src, dst object.ObjectStorage, key string, size int64, upload *object.MultipartUpload, calChksum bool, config *Config) (uint32, error) {
 	limits := dst.Limits()
 	if size > limits.MaxPartSize*int64(upload.MaxCount) {
 		return 0, fmt.Errorf("object size %d is too large to copy", size)
@@ -890,7 +956,7 @@ func doCopyMultiple(src, dst object.ObjectStorage, key string, size int64, uploa
 			}
 			var copyErr error
 			var chksum uint32
-			parts[num], chksum, copyErr = doCopyRange(src, dst, key, int64(num)*partSize, sz, upload, num, abort, calChksum)
+			parts[num], chksum, copyErr = doCopyRange(src, dst, key, int64(num)*partSize, sz, upload, num, abort, calChksum, config)
 			chksums[num] = chksumWithSz{chksum, sz}
 			errs <- copyErr
 		}(i)
@@ -920,29 +986,32 @@ func doCopyMultiple(src, dst object.ObjectStorage, key string, size int64, uploa
 	return chksum, nil
 }
 
+// InitForCopyData is deprecated. Use config.State for state management.
 func InitForCopyData() {
-	concurrent = make(chan int, 10)
-	progress := utils.NewProgress(true)
-	copied = progress.AddCountSpinner("Copied objects")
-	copiedBytes = progress.AddByteSpinner("Copied bytes")
+	// Deprecated: Initialize global syncState for backward compatibility
+	if syncState.Load() == nil {
+		state := NewSyncState(10)
+		state.InitBars(false, false, false)
+		syncState.Store(state)
+	}
 }
 
-func CopyData(src, dst object.ObjectStorage, key string, size int64, calChksum bool, onRetry ...func(int, error)) (uint32, error) {
+func CopyData(src, dst object.ObjectStorage, key string, size int64, calChksum bool, config *Config, onRetry ...func(int, error)) (uint32, error) {
 	start := time.Now()
 	var err error
 	var srcChksum uint32
 	if size < maxBlock {
 		err = try(3, func() (err error) {
-			srcChksum, err = doCopySingle(src, dst, key, size, calChksum)
+			srcChksum, err = doCopySingle(src, dst, key, size, calChksum, config)
 			return
 		}, onRetry...)
 	} else {
 		var upload *object.MultipartUpload
 		if upload, err = dst.CreateMultipartUpload(ctx, key); err == nil {
-			srcChksum, err = doCopyMultiple(src, dst, key, size, upload, calChksum)
+			srcChksum, err = doCopyMultiple(src, dst, key, size, upload, calChksum, config)
 		} else if err == utils.ENOTSUP {
 			err = try(3, func() (err error) {
-				srcChksum, err = doCopySingle(src, dst, key, size, calChksum)
+				srcChksum, err = doCopySingle(src, dst, key, size, calChksum, config)
 				return
 			}, onRetry...)
 		} else { // other error retry
@@ -950,7 +1019,7 @@ func CopyData(src, dst object.ObjectStorage, key string, size int64, calChksum b
 				upload, err = dst.CreateMultipartUpload(ctx, key)
 				return err
 			}, onRetry...); err == nil {
-				srcChksum, err = doCopyMultiple(src, dst, key, size, upload, calChksum)
+				srcChksum, err = doCopyMultiple(src, dst, key, size, upload, calChksum, config)
 			}
 		}
 	}
@@ -1000,6 +1069,7 @@ func fetchTask(tasks chan object.Object) (t object.Object, done func()) {
 }
 
 func worker(tasks chan object.Object, src, dst object.ObjectStorage, config *Config) {
+	state := getState(config)
 	for {
 		obj, done := fetchTask(tasks)
 		if obj == nil {
@@ -1008,17 +1078,17 @@ func worker(tasks chan object.Object, src, dst object.ObjectStorage, config *Con
 		key := obj.Key()
 		switch obj.Size() {
 		case markDeleteSrc:
-			deleteObj(src, key, config.Dry)
+			deleteObj(src, key, config)
 			if !config.Dry {
-				deleted.Increment()
+				state.deleted.Increment()
 				if config.RecordCallback != nil {
 					config.RecordCallback.OnDelete(key, obj.IsDir())
 				}
 			}
 		case markDeleteDst:
-			deleteObj(dst, key, config.Dry)
+			deleteObj(dst, key, config)
 			if !config.Dry {
-				deleted.Increment()
+				state.deleted.Increment()
 				if config.RecordCallback != nil {
 					config.RecordCallback.OnDelete(key, obj.IsDir())
 				}
@@ -1029,19 +1099,19 @@ func worker(tasks chan object.Object, src, dst object.ObjectStorage, config *Con
 			} else {
 				copyPerms(dst, withoutSize(obj), config)
 			}
-			copied.Increment()
+			state.copied.Increment()
 			if config.RecordCallback != nil {
 				config.RecordCallback.OnTransferComplete(key, key, 0, time.Time{})
 			}
 		case markChecksum:
 			if config.Dry {
 				logger.Debugf("Will compare checksum for %s", key)
-				checked.Increment()
+				state.checked.Increment()
 				break
 			}
 			obj = withoutSize(obj)
 			if equal, err := checkSum(src, dst, key, nil, obj, config); err != nil {
-				failed.Increment()
+				state.failed.Increment()
 				if config.RecordCallback != nil {
 					config.RecordCallback.OnFailed(key, key, obj.IsDir(), obj.Size(), obj.Mtime(), err.Error())
 				}
@@ -1055,8 +1125,8 @@ func worker(tasks chan object.Object, src, dst object.ObjectStorage, config *Con
 						srcDelayDelMu.Unlock()
 						shouldVerify = false
 					} else {
-						deleteObj(src, key, false)
-						deleted.Increment()
+						deleteObj(src, key, config)
+						state.deleted.Increment()
 						if config.RecordCallback != nil {
 							config.RecordCallback.OnDelete(key, false)
 						}
@@ -1066,27 +1136,27 @@ func worker(tasks chan object.Object, src, dst object.ObjectStorage, config *Con
 					if o, e := dst.Head(ctx, key); e == nil {
 						if needCopyPerms(obj, o) {
 							copyPerms(dst, obj, config)
-							copied.Increment()
+							state.copied.Increment()
 							if config.RecordCallback != nil {
 								config.RecordCallback.OnTransferComplete(key, key, obj.Size(), obj.Mtime())
 							}
 						} else {
-							skipped.Increment()
-							skippedBytes.IncrInt64(obj.Size())
+							state.skipped.Increment()
+							state.skippedBytes.IncrInt64(obj.Size())
 							if config.RecordCallback != nil {
 								config.RecordCallback.OnSkip(key, key, obj.IsDir(), obj.Size(), obj.Mtime())
 							}
 						}
 					} else {
 						logger.Warnf("Failed to head object %s: %s", key, e)
-						failed.Increment()
+						state.failed.Increment()
 						if config.RecordCallback != nil {
 							config.RecordCallback.OnFailed(key, key, obj.IsDir(), obj.Size(), obj.Mtime(), e.Error())
 						}
 					}
 				} else {
-					skipped.Increment()
-					skippedBytes.IncrInt64(obj.Size())
+					state.skipped.Increment()
+					state.skippedBytes.IncrInt64(obj.Size())
 					if config.RecordCallback != nil {
 						config.RecordCallback.OnSkip(key, key, obj.IsDir(), obj.Size(), obj.Mtime())
 					}
@@ -1100,8 +1170,8 @@ func worker(tasks chan object.Object, src, dst object.ObjectStorage, config *Con
 		default:
 			if config.Dry {
 				logger.Debugf("Will copy %s (%d bytes)", obj.Key(), obj.Size())
-				copied.Increment()
-				copiedBytes.IncrInt64(obj.Size())
+				state.copied.Increment()
+				state.copiedBytes.IncrInt64(obj.Size())
 				break
 			}
 			if config.RecordCallback != nil {
@@ -1121,7 +1191,7 @@ func worker(tasks chan object.Object, src, dst object.ObjectStorage, config *Con
 						config.RecordCallback.OnRetry(key, count, err.Error())
 					}
 				}
-				srcChksum, err = CopyData(src, dst, key, obj.Size(), config.CheckAll || config.CheckNew, onRetry)
+				srcChksum, err = CopyData(src, dst, key, obj.Size(), config.CheckAll || config.CheckNew, config, onRetry)
 			}
 			if errors.Is(err, utils.ErrExtlink) {
 				logger.Warnf("Skip external link %s: %s", key, err)
@@ -1147,7 +1217,7 @@ func worker(tasks chan object.Object, src, dst object.ObjectStorage, config *Con
 				if config.Perms {
 					copyPerms(dst, obj, config)
 				}
-				copied.Increment()
+				state.copied.Increment()
 				if config.RecordCallback != nil {
 					config.RecordCallback.OnTransferComplete(key, key, obj.Size(), obj.Mtime())
 				}
@@ -1155,31 +1225,32 @@ func worker(tasks chan object.Object, src, dst object.ObjectStorage, config *Con
 					config.RecordCallback.OnVerifyComplete(key, key, obj.Size(), obj.Mtime())
 				}
 			} else if errors.Is(err, utils.ErrSkipped) {
-				skipped.Increment()
+				state.skipped.Increment()
 				if config.RecordCallback != nil {
 					config.RecordCallback.OnSkip(key, key, obj.IsDir(), obj.Size(), obj.Mtime())
 				}
 			} else {
-				failed.Increment()
+				state.failed.Increment()
 				logger.Errorf("Failed to copy object %s: %s", key, err)
 				if config.RecordCallback != nil {
 					config.RecordCallback.OnFailed(key, key, obj.IsDir(), obj.Size(), obj.Mtime(), err.Error())
 				}
 			}
 		}
-		incrHandled(1)
+		state.IncrHandled(1)
 		done()
 	}
 }
 
 func checkChange(src, dst object.ObjectStorage, obj object.Object, key string, config *Config) error {
+	state := getState(config)
 	if obj == nil || config.Links && obj.IsSymlink() {
 		return nil // ignore symlink
 	}
 	if cur, err := src.Head(ctx, key); err == nil {
 		if !config.CheckAll && !config.CheckNew {
-			checked.Increment()
-			checkedBytes.IncrInt64(obj.Size())
+			state.checked.Increment()
+			state.checkedBytes.IncrInt64(obj.Size())
 		}
 		equal := cur.Size() == obj.Size()
 		if equal && !cur.Mtime().Equal(obj.Mtime()) {
@@ -1259,11 +1330,15 @@ var srcDelayDelMu sync.Mutex
 var srcDelayDel []string
 
 func handleExtraObject(tasks chan<- object.Object, dstobj object.Object, config *Config) bool {
-	incrTotal(1)
+	state := getState(config)
+	state.IncrTotal(1)
 	if !config.DeleteDst || !config.Dirs && dstobj.IsDir() || config.Limit == 0 {
 		logger.Debug("Ignore extra object", dstobj.Key())
-		extra.Increment()
-		extraBytes.IncrInt64(dstobj.Size())
+		state.extra.Increment()
+		state.extraBytes.IncrInt64(dstobj.Size())
+		if config.ListExtra {
+			logger.Infof("[Extra] %s", dstobj.Key())
+		}
 		if config.Dry && config.RecordCallback != nil {
 			config.RecordCallback.OnPlanned(dstobj.Key(), dstobj.Key(), dstobj.Size(), dstobj.Mtime(), "Extra", "Ignore")
 		}
@@ -1309,21 +1384,25 @@ func startSingleProducer(tasks chan<- object.Object, src, dst object.ObjectStora
 func produce(tasks chan<- object.Object, srckeys, dstkeys <-chan object.Object, config *Config) error {
 	srckeys = filter(srckeys, config.rules, config)
 	dstkeys = filter(dstkeys, config.rules, config)
+	state := getState(config)
 	var dstobj object.Object
 	var (
 		skip, skipBytes int64
 		lastUpdate      time.Time
 	)
 	flushProgress := func() {
-		skipped.IncrInt64(skip)
-		skippedBytes.IncrInt64(skipBytes)
-		incrHandled(int(skip))
+		state.skipped.IncrInt64(skip)
+		state.skippedBytes.IncrInt64(skipBytes)
+		state.IncrHandled(int(skip))
 		skip, skipBytes = 0, 0
 	}
 	defer flushProgress()
 	skipIt := func(obj object.Object) {
 		skip++
 		skipBytes += obj.Size()
+		if config.ListLost {
+			logger.Infof("[Lost] %s", obj.Key())
+		}
 		if skip > 100 || time.Since(lastUpdate) > time.Millisecond*100 {
 			lastUpdate = time.Now()
 			flushProgress()
@@ -1343,7 +1422,7 @@ func produce(tasks chan<- object.Object, srckeys, dstkeys <-chan object.Object, 
 			}
 			config.Limit--
 		}
-		incrTotal(1)
+		state.IncrTotal(1)
 
 		if dstobj != nil && obj.Key() > dstobj.Key() {
 			if handleExtraObject(tasks, dstobj, config) {
@@ -1522,6 +1601,7 @@ func filterKey(o object.Object, now time.Time, rules []rule, config *Config) boo
 
 func filter(keys <-chan object.Object, rules []rule, config *Config) <-chan object.Object {
 	r := make(chan object.Object)
+	state := getState(config)
 	now := time.Now()
 	go func() {
 		for o := range keys {
@@ -1534,8 +1614,8 @@ func filter(keys <-chan object.Object, rules []rule, config *Config) <-chan obje
 				r <- o
 			} else {
 				logger.Debugf("exclude %s size: %d, mtime: %s", o.Key(), o.Size(), o.Mtime())
-				excluded.Increment()
-				excludedBytes.IncrInt64(o.Size())
+				state.excluded.Increment()
+				state.excludedBytes.IncrInt64(o.Size())
 			}
 		}
 		close(r)
@@ -1722,6 +1802,7 @@ func listCommonPrefix(store object.ObjectStorage, prefix string, cp chan object.
 }
 
 func produceFromList(tasks chan<- object.Object, src, dst object.ObjectStorage, config *Config) error {
+	state := getState(config)
 	f, err := os.Open(config.FilesFrom)
 	if err != nil {
 		return fmt.Errorf("open %s: %s", config.FilesFrom, err)
@@ -1737,13 +1818,13 @@ func produceFromList(tasks chan<- object.Object, src, dst object.ObjectStorage, 
 			for key := range prefixs {
 				if !strings.HasSuffix(key, "/") {
 					if err := produceSingleObject(tasks, src, dst, key, config); err == nil {
-						listedPrefix.Increment()
+						state.listedPrefix.Increment()
 						continue
 					} else if errors.Is(err, errDirSuffix) {
 						key += "/"
 					} else if os.IsNotExist(err) {
 						atomic.AddInt64(&ignoreFiles, 1)
-						listedPrefix.Increment()
+						state.listedPrefix.Increment()
 						continue
 					}
 				}
@@ -1751,9 +1832,9 @@ func produceFromList(tasks chan<- object.Object, src, dst object.ObjectStorage, 
 				err = startProducer(tasks, src, dst, key, config.ListDepth, config)
 				if err != nil {
 					logger.Errorf("list prefix %s: %s", key, err)
-					failed.Increment()
+					state.failed.Increment()
 				}
-				listedPrefix.Increment()
+				state.listedPrefix.Increment()
 			}
 		}()
 	}
@@ -1773,7 +1854,7 @@ func produceFromList(tasks chan<- object.Object, src, dst object.ObjectStorage, 
 	close(prefixs)
 
 	wg.Wait()
-	listedPrefix.Done()
+	state.listedPrefix.Done()
 	return nil
 }
 
@@ -1863,7 +1944,7 @@ func startProducer(tasks chan<- object.Object, src, dst object.ObjectStorage, pr
 				err := startProducer(tasks, src, dst, prefix, listDepth-1, config)
 				if err != nil {
 					logger.Errorf("list prefix %s: %s", prefix, err)
-					failed.Increment()
+					getState(config).failed.Increment()
 				}
 			}(c.Key())
 		}
@@ -1908,8 +1989,18 @@ func startProducer(tasks chan<- object.Object, src, dst object.ObjectStorage, pr
 }
 
 // Sync syncs all the keys between to object storage
-func Sync(src, dst object.ObjectStorage, config *Config) error {
+func Sync(parentCtx context.Context, src, dst object.ObjectStorage, config *Config) error {
+	if parentCtx == nil {
+		parentCtx = context.Background()
+	}
+	config.Ctx = parentCtx
+	ctx = parentCtx  // also update global ctx for backward compatibility
+
 	syncStartedAt := time.Now()
+	if config.State == nil {
+		config.State = NewSyncState(config.Threads)
+	}
+	state := config.State
 	if config.RecordDBType != "" && config.RecordDBDSN != "" {
 		recorder, err := record.NewRecorder(config.RecordDBType, config.RecordDBDSN, &record.ManagerConfig{
 			TableName:             config.RecordTableName,
@@ -1964,7 +2055,7 @@ func Sync(src, dst object.ObjectStorage, config *Config) error {
 	}
 	tasks := make(chan object.Object, bufferSize)
 	wg := sync.WaitGroup{}
-	concurrent = make(chan int, config.Threads)
+	state.concurrent = make(chan int, config.Threads)
 	var localLimit *ratelimit.Bucket
 	if config.BWLimit > 0 {
 		bps := float64(config.BWLimit*1e6/8) * 0.85 // 15% overhead
@@ -1981,30 +2072,13 @@ func Sync(src, dst object.ObjectStorage, config *Config) error {
 		}()
 	}
 	if localLimit != nil || gLimit != nil {
-		limiter = &mixedLimiter{
+		state.limiter = &mixedLimiter{
 			global: gLimit,
 			local:  localLimit,
 		}
 	}
 
-	progress := utils.NewProgress(config.Verbose || config.Quiet || config.Manager != "")
-	handled = progress.AddCountBar("Scanned objects", 0)
-	excluded = progress.AddCountSpinner("Excluded objects")
-	excludedBytes = progress.AddByteSpinner("Excluded bytes")
-	skipped = progress.AddCountSpinner("Skipped objects")
-	skippedBytes = progress.AddByteSpinner("Skipped bytes")
-	extra = progress.AddCountSpinner("Extra objects")
-	extraBytes = progress.AddByteSpinner("Extra bytes")
-	pending = progress.AddCountSpinner("Pending objects")
-	copied = progress.AddCountSpinner("Copied objects")
-	copiedBytes = progress.AddByteSpinner("Copied bytes")
-	if config.CheckAll || config.CheckNew || config.CheckChange {
-		checked = progress.AddCountSpinner("Checked objects")
-		checkedBytes = progress.AddByteSpinner("Checked bytes")
-	}
-	if config.DeleteSrc || config.DeleteDst {
-		deleted = progress.AddCountSpinner("Deleted objects")
-	}
+	state.InitBars(config.Verbose, config.Quiet, config.Manager != "")
 
 	syncExitFunc := func() error {
 		if config.Manager == "" {
@@ -2012,39 +2086,39 @@ func Sync(src, dst object.ObjectStorage, config *Config) error {
 			if val > 0 {
 				logger.Infof("Ignored %d non-existent paths from the file list", val)
 			}
-			pending.SetCurrent(0)
-			incrHandled(0)
-			total := handled.GetTotal()
-			progress.Done()
+			state.pending.SetCurrent(0)
+			state.IncrHandled(0)
+			total := state.handled.GetTotal()
+			// progress.Done() is called inside state
 
 			msg := fmt.Sprintf("Found: %d, excluded: %d (%s), skipped: %d (%s), copied: %d (%s), extra: %d (%s)", total,
-				excluded.Current(), formatSize(excludedBytes.Current()),
-				skipped.Current(), formatSize(skippedBytes.Current()),
-				copied.Current(), formatSize(copiedBytes.Current()),
-				extra.Current(), formatSize(extraBytes.Current()))
-			if checked != nil {
-				msg += fmt.Sprintf(", checked: %d (%s)", checked.Current(), formatSize(checkedBytes.Current()))
+				state.excluded.Current(), formatSize(state.excludedBytes.Current()),
+				state.skipped.Current(), formatSize(state.skippedBytes.Current()),
+				state.copied.Current(), formatSize(state.copiedBytes.Current()),
+				state.extra.Current(), formatSize(state.extraBytes.Current()))
+			if state.checked != nil {
+				msg += fmt.Sprintf(", checked: %d (%s)", state.checked.Current(), formatSize(state.checkedBytes.Current()))
 			}
-			if deleted != nil {
-				msg += fmt.Sprintf(", deleted: %d", deleted.Current())
+			if state.deleted != nil {
+				msg += fmt.Sprintf(", deleted: %d", state.deleted.Current())
 			}
-			if failed != nil {
-				msg += fmt.Sprintf(", failed: %d", failed.Current())
+			if state.failed != nil {
+				msg += fmt.Sprintf(", failed: %d", state.failed.Current())
 			}
-			if total-handled.Current()-extra.Current() > 0 {
-				msg += fmt.Sprintf(", lost: %d", total-handled.Current())
+			if total-state.handled.Current()-state.extra.Current() > 0 {
+				msg += fmt.Sprintf(", lost: %d", total-state.handled.Current())
 			}
 			logger.Info(msg)
 
-			if failed != nil {
-				if n := failed.Current(); n > 0 || total > handled.Current()+extra.Current() {
-					return fmt.Errorf("failed to handle %d objects", n+total-handled.Current()-extra.Current())
+			if state.failed != nil {
+				if n := state.failed.Current(); n > 0 || total > state.handled.Current()+state.extra.Current() {
+					return fmt.Errorf("failed to handle %d objects", n+total-state.handled.Current()-state.extra.Current())
 				}
 			}
 		} else {
-			sendStats(config.Manager)
+			sendStats(config.Manager, config)
 			for len(srcDelayDel) > 0 {
-				sendStats(config.Manager)
+				sendStats(config.Manager, config)
 			}
 			logger.Infof("This worker process has already completed its tasks")
 		}
@@ -2052,11 +2126,11 @@ func Sync(src, dst object.ObjectStorage, config *Config) error {
 	}
 
 	if !config.Dry {
-		failed = progress.AddCountSpinner("Failed objects")
+		state.failed = utils.NewProgress(config.Verbose || config.Quiet || config.Manager != "").AddCountSpinner("Failed objects")
 		if config.MaxFailure > 0 {
 			go func() {
 				for {
-					if failed.Current() >= config.MaxFailure {
+					if state.failed.Current() >= config.MaxFailure {
 						logger.Infof("the maximum error limit of %d was reached, stop now", config.MaxFailure)
 						_ = syncExitFunc()
 						os.Exit(1)
@@ -2068,12 +2142,22 @@ func Sync(src, dst object.ObjectStorage, config *Config) error {
 	}
 
 	if config.Manager == "" && config.FilesFrom != "" {
-		listedPrefix = progress.AddCountSpinner("Prefix")
+		state.listedPrefix = utils.NewProgress(config.Verbose || config.Quiet || config.Manager != "").AddCountSpinner("Prefix")
+	}
+
+	if config.CheckAll || config.CheckNew || config.CheckChange {
+		if state.checked == nil {
+			state.checked = utils.NewProgress(config.Verbose || config.Quiet || config.Manager != "").AddCountSpinner("Checked objects")
+			state.checkedBytes = utils.NewProgress(config.Verbose || config.Quiet || config.Manager != "").AddByteSpinner("Checked bytes")
+		}
+	}
+	if config.DeleteSrc || config.DeleteDst {
+		state.deleted = utils.NewProgress(config.Verbose || config.Quiet || config.Manager != "").AddCountSpinner("Deleted objects")
 	}
 
 	go func() {
 		for {
-			pending.SetCurrent(int64(len(tasks)))
+			state.pending.SetCurrent(int64(len(tasks)))
 			time.Sleep(time.Millisecond * 100)
 		}
 	}()
@@ -2121,7 +2205,7 @@ func Sync(src, dst object.ObjectStorage, config *Config) error {
 		go fetchJobs(tasks, config)
 		go func() {
 			for {
-				sendStats(config.Manager)
+				sendStats(config.Manager, config)
 				time.Sleep(time.Second)
 			}
 		}()
@@ -2135,8 +2219,9 @@ func Sync(src, dst object.ObjectStorage, config *Config) error {
 				sort.Strings(keys)
 			}
 			for i := len(keys) - 1; i >= 0; i-- {
-				incrHandled(1)
-				deleteObj(storage, keys[i], config.Dry)
+				state := getState(config)
+				state.IncrHandled(1)
+				deleteObj(storage, keys[i], config)
 				if !config.Dry && config.RecordCallback != nil {
 					config.RecordCallback.OnDelete(keys[i], true)
 				}
@@ -2159,24 +2244,24 @@ func Sync(src, dst object.ObjectStorage, config *Config) error {
 
 	if config.RecordCallback != nil {
 		del := int64(0)
-		if deleted != nil {
-			del = deleted.Current()
+		if state.deleted != nil {
+			del = state.deleted.Current()
 		}
 		fail := int64(0)
-		if failed != nil {
-			fail = failed.Current()
+		if state.failed != nil {
+			fail = state.failed.Current()
 		}
 		config.RecordCallback.OnSummary(&record.RunSummary{
 			RunID:        config.RecordRunID,
 			Src:          config.Src,
 			Dst:          config.Dst,
 			Dry:          config.Dry,
-			TotalScanned: handled.GetTotal(),
-			TotalBytes:   copiedBytes.Current() + skippedBytes.Current() + extraBytes.Current(),
-			Copied:       copied.Current(),
-			CopiedBytes:  copiedBytes.Current(),
-			Skipped:      skipped.Current(),
-			Extra:        extra.Current(),
+			TotalScanned: state.handled.GetTotal(),
+			TotalBytes:   state.copiedBytes.Current() + state.skippedBytes.Current() + state.extraBytes.Current(),
+			Copied:       state.copied.Current(),
+			CopiedBytes:  state.copiedBytes.Current(),
+			Skipped:      state.skipped.Current(),
+			Extra:        state.extra.Current(),
 			Deleted:      del,
 			Failed:       fail,
 			StartedAt:    syncStartedAt,
@@ -2188,112 +2273,113 @@ func Sync(src, dst object.ObjectStorage, config *Config) error {
 }
 
 func initSyncMetrics(config *Config) {
+	state := getState(config)
 	if config.Registerer != nil {
 		config.Registerer.MustRegister(
 			prometheus.NewCounterFunc(prometheus.CounterOpts{
 				Name: "scanned",
 				Help: "Scanned objects",
 			}, func() float64 {
-				return float64(handled.Total())
+				return float64(state.handled.Total())
 			}),
 			prometheus.NewCounterFunc(prometheus.CounterOpts{
 				Name: "excluded",
 				Help: "Excluded objects",
 			}, func() float64 {
-				return float64(excluded.Current())
+				return float64(state.excluded.Current())
 			}),
 		prometheus.NewCounterFunc(prometheus.CounterOpts{
 			Name: "excluded_bytes",
 			Help: "Excluded bytes",
 		}, func() float64 {
-			return float64(excludedBytes.Current())
+			return float64(state.excludedBytes.Current())
 		}),
 		prometheus.NewCounterFunc(prometheus.CounterOpts{
 			Name: "extra",
 			Help: "Extra objects",
 		}, func() float64 {
-			return float64(extra.Current())
+			return float64(state.extra.Current())
 		}),
 		prometheus.NewCounterFunc(prometheus.CounterOpts{
 			Name: "extra_bytes",
 			Help: "Extra bytes",
 		}, func() float64 {
-			return float64(extraBytes.Current())
+			return float64(state.extraBytes.Current())
 		}),
 			prometheus.NewCounterFunc(prometheus.CounterOpts{
 				Name: "handled",
 				Help: "Handled objects",
 			}, func() float64 {
-				return float64(handled.Current())
+				return float64(state.handled.Current())
 			}),
 			prometheus.NewGaugeFunc(prometheus.GaugeOpts{
 				Name: "pending",
 				Help: "Pending objects",
 			}, func() float64 {
-				return float64(pending.Current())
+				return float64(state.pending.Current())
 			}),
 			prometheus.NewCounterFunc(prometheus.CounterOpts{
 				Name: "copied",
 				Help: "Copied objects",
 			}, func() float64 {
-				return float64(copied.Current())
+				return float64(state.copied.Current())
 			}),
 			prometheus.NewCounterFunc(prometheus.CounterOpts{
 				Name: "copied_bytes",
 				Help: "Copied bytes",
 			}, func() float64 {
-				return float64(copiedBytes.Current())
+				return float64(state.copiedBytes.Current())
 			}),
 			prometheus.NewCounterFunc(prometheus.CounterOpts{
 				Name: "skipped",
 				Help: "Skipped objects",
 			}, func() float64 {
-				return float64(skipped.Current())
+				return float64(state.skipped.Current())
 			}),
 			prometheus.NewCounterFunc(prometheus.CounterOpts{
 				Name: "skipped_bytes",
 				Help: "Skipped bytes",
 			}, func() float64 {
-				return float64(skippedBytes.Current())
+				return float64(state.skippedBytes.Current())
 			}),
 		)
-		if failed != nil {
+		if state.failed != nil {
 			config.Registerer.MustRegister(prometheus.NewCounterFunc(prometheus.CounterOpts{
 				Name: "failed",
 				Help: "Failed objects",
 			}, func() float64 {
-				return float64(failed.Current())
+				return float64(state.failed.Current())
 			}))
 		}
-		if deleted != nil {
+		if state.deleted != nil {
 			config.Registerer.MustRegister(prometheus.NewCounterFunc(prometheus.CounterOpts{
 				Name: "deleted",
 				Help: "Deleted objects",
 			}, func() float64 {
-				return float64(deleted.Current())
+				return float64(state.deleted.Current())
 			}))
 		}
-		if checked != nil && checkedBytes != nil {
+		if state.checked != nil && state.checkedBytes != nil {
 			config.Registerer.MustRegister(
 				prometheus.NewCounterFunc(prometheus.CounterOpts{
 					Name: "checked",
 					Help: "Checked objects",
 				}, func() float64 {
-					return float64(checked.Current())
+					return float64(state.checked.Current())
 				}),
 				prometheus.NewCounterFunc(prometheus.CounterOpts{
 					Name: "checked_bytes",
 					Help: "Checked bytes",
 				}, func() float64 {
-					return float64(checkedBytes.Current())
+					return float64(state.checkedBytes.Current())
 				}))
 		}
-		if listedPrefix != nil {
+		if state.listedPrefix != nil {
 			config.Registerer.MustRegister(prometheus.NewCounterFunc(prometheus.CounterOpts{
-				Name: "Prefix",
+				Name: "prefix",
 				Help: "listed prefix",
 			}, func() float64 {
-				return float64(listedPrefix.Current())
+				return float64(state.listedPrefix.Current())
 			}))
 		}
 	}

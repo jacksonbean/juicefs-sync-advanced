@@ -17,6 +17,7 @@
 package sync
 
 import (
+	"context"
 	"math"
 	"os"
 	"strconv"
@@ -90,6 +91,14 @@ type Config struct {
 	rules          []rule
 	concurrentList chan int
 	Registerer     prometheus.Registerer
+
+	// Context support for cancellation
+	Ctx context.Context
+	// Shared state for this sync operation
+	State *SyncState
+	// List extra/lost keys to stderr
+	ListExtra bool
+	ListLost  bool
 }
 
 const JFS_UMASK = "JFS_UMASK"
@@ -237,6 +246,8 @@ func NewConfigFromCli(c *cli.Context) *Config {
 		RecordFlushInterval: time.Second,
 		RecordRunID:       c.String("record-run-id"),
 		Env:               make(map[string]string),
+		ListExtra:         c.Bool("list-extra"),
+		ListLost:          c.Bool("list-lost"),
 	}
 	if !c.IsSet("max-size") {
 		cfg.MaxSize = math.MaxInt64

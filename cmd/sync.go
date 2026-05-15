@@ -17,6 +17,7 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"net"
 	_ "net/http/pprof"
@@ -207,6 +208,14 @@ func syncActionFlags() []cli.Flag {
 			Name:    "delete-dst",
 			Aliases: []string{"deleteDst"},
 			Usage:   "delete extraneous objects from destination",
+		},
+		&cli.BoolFlag{
+			Name:  "list-extra",
+			Usage: "print extra keys (present in destination but not in source) to stderr",
+		},
+		&cli.BoolFlag{
+			Name:  "list-lost",
+			Usage: "print lost keys (present in source but not in destination) to stderr",
 		},
 		&cli.BoolFlag{
 			Name:  "check-all",
@@ -576,5 +585,5 @@ func doSync(c *cli.Context) error {
 	}
 	config.Src = utils.RemovePassword(srcURL)
 	config.Dst = utils.RemovePassword(dstURL)
-	return sync.Sync(src, dst, config)
+	return sync.Sync(context.Background(), src, dst, config)
 }

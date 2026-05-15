@@ -8,6 +8,7 @@
 - **Dry-run mode** (`--dry`) — scan and compare source/destination without copying, records planned actions to database
 - **Database recording** — record scan results to MySQL, PostgreSQL, or SQLite for analysis
 - **Plan table** — see exactly what would be copied, skipped, deleted, or updated before running
+- **list-extra / list-lost** — audit mode to list orphaned or missing keys without modifying anything
 - **Performance metrics** — Prometheus metrics + `sync_runs` summary table for migration performance benchmarking
 - **Include/exclude filters** — rsync-compatible pattern matching
 - **Cluster mode** — distributed sync with manager/worker architecture
@@ -70,6 +71,8 @@ juicefs-sync-advanced sync [command options] SRC DST
 | `--delete-dst` | Delete extra files on destination |
 | `--check-all` | Verify integrity of all files |
 | `--check-new` | Verify integrity of newly copied files |
+| `--list-extra` | Print extra keys (in destination but not source) to stderr |
+| `--list-lost` | Print lost keys (in source but not destination) to stderr |
 | `--bwlimit` | Bandwidth limit in Mbps |
 | `--start KEY` | First key to sync |
 | `--end KEY` | Last key to sync |
@@ -99,6 +102,18 @@ Supported storage types: `s3`, `oss`, `cos`, `obs`, `gs`, `wasb`, `minio`, `file
 **Sync with include/exclude patterns:**
 ```bash
 ./juicefs-sync-advanced sync --include='logs/**' --exclude='temp/**' s3://src/ /mnt/dst/
+```
+
+**Find orphaned files in destination (no actual sync):**
+```bash
+./juicefs-sync-advanced sync --dry --list-extra s3://src/ s3://dst/
+# Outputs: [Extra] <key>  for each file only in destination
+```
+
+**Find missing files in destination (no actual sync):**
+```bash
+./juicefs-sync-advanced sync --dry --list-lost s3://src/ s3://dst/
+# Outputs: [Lost] <key>  for each file only in source
 ```
 
 **Migration analysis with Postgres:**
