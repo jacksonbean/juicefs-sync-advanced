@@ -186,6 +186,7 @@ func newParallelDownloader(store object.ObjectStorage, key string, size int64, b
 		blockSize:  bSize,
 		concurrent: concurrent,
 		buffers:    make(map[int64]*[]byte),
+		retryTimes: defaultRetryTimes,
 	}
 	down.notify = sync.NewCond(down)
 	go down.download()
