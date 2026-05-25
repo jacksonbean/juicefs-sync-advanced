@@ -15,6 +15,8 @@ jobs:
         with:
           go-version: '1.23'
           cache: true
+      - name: Setup web dist
+        run: mkdir -p web/dist && echo '{}' > web/dist/placeholder.json
       - name: Build
         run: go build -o juicefs-sync-advanced .
       - name: Vet
