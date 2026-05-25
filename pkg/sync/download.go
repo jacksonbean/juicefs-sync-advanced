@@ -83,7 +83,7 @@ func (r *parallelDownloader) download() {
 				})
 				if e != nil {
 					r.setErr(e)
-				} else { //nolint:typecheck
+				} else if in != nil { //nolint:typecheck
 					defer in.Close()
 					p := downloadBufPool.Get().(*[]byte)
 					*p = (*p)[:size]
