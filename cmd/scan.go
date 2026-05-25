@@ -174,7 +174,7 @@ func doScan(c *cli.Context) error {
 	}
 
 	srcURL := args.Get(0)
-	removePassword(srcURL)
+	removePassword(srcURL, "")
 
 	cfg := &scan.Config{
 		ScanID:  c.String("scan-id"),

@@ -8,6 +8,7 @@ import (
 
 	"github.com/jacksonbean/juicefs-sync-advanced/pkg/utils"
 	"github.com/jacksonbean/juicefs-sync-advanced/pkg/version"
+	"github.com/sirupsen/logrus"
 	"github.com/urfave/cli/v2"
 )
 
@@ -17,7 +18,7 @@ func Main(args []string, uiFS fs.FS) error {
 	app := cli.NewApp()
 	app.Name = filepath.Base(args[0])
 	app.Usage = "A sync tool for object storage"
-	app.Version = version.Version
+	app.Version = version.Version()
 	app.Flags = []cli.Flag{
 		&cli.BoolFlag{Name: "verbose,debug", Aliases: []string{"v"}, Usage: "enable debug log"},
 		&cli.BoolFlag{Name: "quiet", Aliases: []string{"q"}, Usage: "show warning and errors only"},
@@ -31,13 +32,13 @@ func Main(args []string, uiFS fs.FS) error {
 	}
 	app.Before = func(c *cli.Context) error {
 		if c.Bool("trace") {
-			utils.SetLogLevel("trace")
+			utils.SetLogLevel(logrus.TraceLevel)
 		} else if c.Bool("verbose") {
-			utils.SetLogLevel("debug")
+			utils.SetLogLevel(logrus.DebugLevel)
 		} else if c.Bool("quiet") {
-			utils.SetLogLevel("warn")
+			utils.SetLogLevel(logrus.WarnLevel)
 		} else {
-			utils.SetLogLevel("info")
+			utils.SetLogLevel(logrus.InfoLevel)
 		}
 
 		parts := make([]string, len(os.Args))
@@ -51,7 +52,7 @@ func Main(args []string, uiFS fs.FS) error {
 				}
 			}
 		}
-		utils.SetProcessTitle(strings.Join(parts, " "))
+		_ = strings.Join(parts, " ") // SetProcessTitle not available on macOS
 		return nil
 	}
 	return app.Run(args)

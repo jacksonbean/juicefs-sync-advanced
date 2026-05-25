@@ -17,6 +17,10 @@
 package cmd
 
 import (
+	"net/url"
+	"os"
+	"strings"
+
 	"github.com/urfave/cli/v2"
 )
 
@@ -94,4 +98,35 @@ func expandFlags(compoundFlags ...[]cli.Flag) []cli.Flag {
 		flags = append(flags, flag...)
 	}
 	return flags
+}
+
+// setup validates the command arguments and does basic setup.
+// minArgs: minimum number of positional arguments required.
+func setup(c *cli.Context, minArgs int) {
+	if c.Args().Len() < minArgs {
+		logger.Fatalf("wrong number of arguments: expected at least %d, got %d", minArgs, c.Args().Len())
+	}
+}
+
+// removePassword removes password from URLs in arguments.
+func removePassword(srcURL, dstURL string) {
+	for _, uri := range []*string{&srcURL, &dstURL} {
+		if u, err := url.Parse(*uri); err == nil {
+			if _, ok := u.User.Password(); ok {
+				u.User = url.UserPassword(u.User.Username(), "")
+				*uri = u.String()
+			}
+		}
+	}
+	// Also remove from os.Args for process title
+	for i, arg := range os.Args {
+		if strings.Contains(arg, "://") {
+			if u, err := url.Parse(arg); err == nil {
+				if _, ok := u.User.Password(); ok {
+					u.User = url.UserPassword(u.User.Username(), "")
+					os.Args[i] = u.String()
+				}
+			}
+		}
+	}
 }
