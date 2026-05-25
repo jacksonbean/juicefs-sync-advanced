@@ -9,7 +9,7 @@
 | **任务持久化** | SQLite 记录 job 状态，支持中断后断点续传 |
 | **增量同步** | --update 基于 mtime 对比，只同步变化的文件 |
 | **正则过滤** | --include-regex / --exclude-regex 支持复杂匹配规则 |
-| **Benchmark 调优** | --benchmark 自动分析并推荐最佳并发线程数 |
+| **可配置重试** | --retry-times 调整失败操作重试次数，默认 5 次 |
 | **定时调度** | --schedule + cron 调度器，支持 SQLite 持久化 |
 | **MPU 断点续传** | 大文件分片上传中断后可从断点恢复 |
 | **Web UI** | React + shadcn/ui 单页应用，Go embed 单二进制 |

@@ -100,7 +100,10 @@ type Config struct {
 	ListExtra bool
 	ListLost  bool
 
-	ConfigJSON string
+	ConfigJSON  string
+	// RetryTimes is the max retry count for failed I/O operations (Get/Put/Delete/Upload).
+	// Valid range: 1-100. Defaults to 5 if not set.
+	RetryTimes int
 }
 
 const JFS_UMASK = "JFS_UMASK"
@@ -250,6 +253,14 @@ func NewConfigFromCli(c *cli.Context) *Config {
 		Env:               make(map[string]string),
 		ListExtra:         c.Bool("list-extra"),
 		ListLost:          c.Bool("list-lost"),
+		RetryTimes:        c.Int("retry-times"),
+	}
+	// Validate RetryTimes range
+	if cfg.RetryTimes <= 0 {
+		cfg.RetryTimes = 5 // Reset to default if invalid
+	} else if cfg.RetryTimes > 100 {
+		logger.Warnf("retry-times %d exceeds max (100), resetting to 100", cfg.RetryTimes)
+		cfg.RetryTimes = 100
 	}
 	if !c.IsSet("max-size") {
 		cfg.MaxSize = math.MaxInt64

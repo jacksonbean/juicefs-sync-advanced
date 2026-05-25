@@ -797,3 +797,20 @@ func TestFilterSizeAndAge(t *testing.T) {
 		t.Fatalf("filterKey should fail")
 	}
 }
+
+func TestGetRetryTimes(t *testing.T) {
+	// Test nil config returns default
+	if got := getRetryTimes(nil); got != 5 {
+		t.Fatalf("getRetryTimes(nil) = %d, want 5", got)
+	}
+
+	// Test zero value returns default
+	if got := getRetryTimes(&Config{RetryTimes: 0}); got != 5 {
+		t.Fatalf("getRetryTimes(RetryTimes=0) = %d, want 5", got)
+	}
+
+	// Test valid value
+	if got := getRetryTimes(&Config{RetryTimes: 10}); got != 10 {
+		t.Fatalf("getRetryTimes(RetryTimes=10) = %d, want 10", got)
+	}
+}

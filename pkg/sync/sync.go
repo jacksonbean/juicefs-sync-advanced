@@ -232,6 +232,17 @@ func (l *globalLimit) checkBalance() {
 var crcTable = crc32.MakeTable(crc32.Castagnoli)
 var logger = utils.GetLogger("juicefs")
 
+// defaultRetryTimes is the default retry count used when config.RetryTimes is 0
+const defaultRetryTimes = 5
+
+// getRetryTimes returns the effective retry count from config, or default
+func getRetryTimes(config *Config) int {
+	if config != nil && config.RetryTimes > 0 {
+		return config.RetryTimes
+	}
+	return defaultRetryTimes
+}
+
 // ctx is the default context used for IO operations.
 // It's initialized with context.Background() and can be replaced via SetContext.
 var ctx = context.Background()
@@ -438,7 +449,7 @@ func deleteObj(storage object.ObjectStorage, key string, config *Config) {
 		return
 	}
 	start := time.Now()
-	if err := try(3, func() error { return storage.Delete(ctx, key) }); err == nil {
+	if err := try(getRetryTimes(config), func() error { return storage.Delete(ctx, key) }); err == nil {
 		state.deleted.Increment()
 		logger.Debugf("Deleted %s from %s in %s", key, storage, time.Since(start))
 	} else {
@@ -660,7 +671,7 @@ func checkSum(src, dst object.ObjectStorage, key string, srcChksum *uint32, obj 
 	state := getState(config)
 	start := time.Now()
 	var equal bool
-	err := try(3, func() error { return doCheckSum(src, dst, key, srcChksum, obj, config, &equal) })
+	err := try(getRetryTimes(config), func() error { return doCheckSum(src, dst, key, srcChksum, obj, config, &equal) })
 	if err == nil {
 		state.checked.Increment()
 		state.checkedBytes.IncrInt64(obj.Size())
@@ -689,7 +700,7 @@ func doCopySingle(src, dst object.ObjectStorage, key string, size int64, calChks
 	if size > maxBlock && !inMap(dst, readInMem) && !inMap(src, fastStreamRead) {
 		var err error
 		var in io.Reader
-		downer := newParallelDownloaderWithState(src, key, size, downloadBufSize, state)
+		downer := newParallelDownloaderWithState(src, key, size, downloadBufSize, state, getRetryTimes(config))
 		defer downer.Close()
 		if inMap(dst, streamWrite) {
 			in = downer
@@ -822,7 +833,7 @@ func doUploadPart(src, dst object.ObjectStorage, srckey string, off, size int64,
 	defer dynFree(data)
 	var part *object.Part
 	var chksum uint32
-	err := try(3, func() error {
+	err := try(getRetryTimes(config), func() error {
 		in, err := src.Get(ctx, srckey, off, sz)
 		if err != nil {
 			return err
@@ -877,7 +888,7 @@ func doCopyRange(src, dst object.ObjectStorage, key string, off, size int64, upl
 	tmpkey := fmt.Sprintf("%s.part%d", key, num)
 	var up *object.MultipartUpload
 	var err error
-	err = try(3, func() error {
+	err = try(getRetryTimes(config), func() error {
 		up, err = dst.CreateMultipartUpload(ctx, tmpkey)
 		return err
 	})
@@ -919,13 +930,13 @@ func doCopyRange(src, dst object.ObjectStorage, key string, off, size int64, upl
 		}
 	}
 
-	err = try(3, func() error { return dst.CompleteUpload(ctx, tmpkey, up.UploadID, parts) })
+	err = try(getRetryTimes(config), func() error { return dst.CompleteUpload(ctx, tmpkey, up.UploadID, parts) })
 	if err != nil {
 		dst.AbortUpload(ctx, tmpkey, up.UploadID)
 		return nil, 0, fmt.Errorf("multipart: %s", err)
 	}
 	var part *object.Part
-	err = try(3, func() error {
+	err = try(getRetryTimes(config), func() error {
 		part, err = dst.UploadPartCopy(ctx, key, upload.UploadID, num+1, tmpkey, 0, size)
 		return err
 	})
@@ -969,7 +980,7 @@ func doCopyMultiple(src, dst object.ObjectStorage, key string, size int64, uploa
 		}
 	}
 	if err == nil {
-		err = try(3, func() error { return dst.CompleteUpload(ctx, key, upload.UploadID, parts) })
+		err = try(getRetryTimes(config), func() error { return dst.CompleteUpload(ctx, key, upload.UploadID, parts) })
 	}
 	if err != nil {
 		dst.AbortUpload(ctx, key, upload.UploadID)
@@ -1001,7 +1012,7 @@ func CopyData(src, dst object.ObjectStorage, key string, size int64, calChksum b
 	var err error
 	var srcChksum uint32
 	if size < maxBlock {
-		err = try(3, func() (err error) {
+		err = try(getRetryTimes(config), func() (err error) {
 			srcChksum, err = doCopySingle(src, dst, key, size, calChksum, config)
 			return
 		}, onRetry...)
@@ -1010,12 +1021,12 @@ func CopyData(src, dst object.ObjectStorage, key string, size int64, calChksum b
 		if upload, err = dst.CreateMultipartUpload(ctx, key); err == nil {
 			srcChksum, err = doCopyMultiple(src, dst, key, size, upload, calChksum, config)
 		} else if err == utils.ENOTSUP {
-			err = try(3, func() (err error) {
+			err = try(getRetryTimes(config), func() (err error) {
 				srcChksum, err = doCopySingle(src, dst, key, size, calChksum, config)
 				return
 			}, onRetry...)
 		} else { // other error retry
-			if err = try(2, func() error {
+			if err = try(getRetryTimes(config), func() error {
 				upload, err = dst.CreateMultipartUpload(ctx, key)
 				return err
 			}, onRetry...); err == nil {

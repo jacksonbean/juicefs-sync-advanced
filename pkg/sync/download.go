@@ -27,17 +27,18 @@ import (
 
 type parallelDownloader struct {
 	sync.Mutex
-	notify     *sync.Cond
-	src        object.ObjectStorage
-	key        string
-	fsize      int64
-	blockSize  int64
-	concurrent chan int
-	buffers    map[int64]*[]byte
-	off        int64
-	err        error
-	limiter    *mixedLimiter
+	notify      *sync.Cond
+	src         object.ObjectStorage
+	key         string
+	fsize       int64
+	blockSize   int64
+	concurrent  chan int
+	buffers     map[int64]*[]byte
+	off         int64
+	err         error
+	limiter     *mixedLimiter
 	copiedBytes *utils.Bar
+	retryTimes  int
 }
 
 func (r *parallelDownloader) hasErr() bool {
@@ -75,7 +76,7 @@ func (r *parallelDownloader) download() {
 					r.limiter.Wait(size)
 				}
 				var in io.ReadCloser
-				e := try(3, func() error {
+				e := try(r.retryTimes, func() error {
 					var err error
 					in, err = r.src.Get(ctx, r.key, off, size)
 					return err
@@ -154,7 +155,7 @@ func (r *parallelDownloader) Close() {
 	}
 }
 
-func newParallelDownloaderWithState(store object.ObjectStorage, key string, size int64, bSize int64, state *SyncState) *parallelDownloader {
+func newParallelDownloaderWithState(store object.ObjectStorage, key string, size int64, bSize int64, state *SyncState, retryTimes int) *parallelDownloader {
 	if bSize < 1 {
 		panic("concurrent and blockSize must be positive integer")
 	}
@@ -167,6 +168,7 @@ func newParallelDownloaderWithState(store object.ObjectStorage, key string, size
 		buffers:      make(map[int64]*[]byte),
 		limiter:      state.limiter,
 		copiedBytes:  state.copiedBytes,
+		retryTimes:   retryTimes,
 	}
 	down.notify = sync.NewCond(down)
 	go down.download()

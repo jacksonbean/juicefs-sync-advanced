@@ -86,22 +86,8 @@ Supported storage systems: https://juicefs.com/docs/community/how_to_setup_objec
 			syncStorageFlags(),
 			clusterFlags(),
 			recordFlags(),
-			addCategories("METRICS", []cli.Flag{
-				&cli.StringFlag{
-					Name:  "metrics",
-					Value: "127.0.0.1:9567",
-					Usage: "address to export metrics",
-				},
-				&cli.StringFlag{
-					Name:  "consul",
-					Value: "127.0.0.1:8500",
-					Usage: "consul address to register",
-				},
-				&cli.StringFlag{
-					Name:  "instance-name",
-					Usage: "human-friendly name for this sync instance (shown in UI)",
-				},
-			}),
+			retryFlags(),
+			metricFlags(),
 		),
 	}
 }
@@ -239,6 +225,11 @@ func syncActionFlags() []cli.Flag {
 			Value: -1,
 			Usage: "max number of allowed failed files (-1 for unlimited)",
 		},
+		&cli.IntFlag{
+			Name:  "retry-times",
+			Value: 5,
+			Usage: "max retry times for failed operations",
+		},
 		&cli.BoolFlag{
 			Name:  "dry",
 			Usage: "don't copy file",
@@ -331,6 +322,35 @@ func recordFlags() []cli.Flag {
 		&cli.StringFlag{
 			Name:  "record-run-id",
 			Usage: "run ID for this sync session (used in sync_plan table during dry-run)",
+		},
+	})
+}
+
+func retryFlags() []cli.Flag {
+	return addCategories("RETRY", []cli.Flag{
+		&cli.IntFlag{
+			Name:  "retry-times",
+			Value: 5,
+			Usage: "max retry times for failed operations (1-100)",
+		},
+	})
+}
+
+func metricFlags() []cli.Flag {
+	return addCategories("METRICS", []cli.Flag{
+		&cli.StringFlag{
+			Name:  "metrics",
+			Value: "127.0.0.1:9567",
+			Usage: "address to export metrics",
+		},
+		&cli.StringFlag{
+			Name:  "consul",
+			Value: "127.0.0.1:8500",
+			Usage: "consul address to register",
+		},
+		&cli.StringFlag{
+			Name:  "instance-name",
+			Usage: "human-friendly name for this sync instance (shown in UI)",
 		},
 	})
 }
